@@ -1,11 +1,9 @@
 # Backend configuration for the internal-test stack.
-# Replace MGMT_ACCOUNT_ID with the actual management account ID before running
-# `terraform init`. Run scripts/bootstrap-backend.sh first if the S3 bucket
-# and DynamoDB table do not yet exist.
+# State is stored in the Internal account (577881328002).
 
 terraform {
   backend "s3" {
-    bucket         = "odot-terraform-state-MGMT_ACCOUNT_ID"
+    bucket         = "odot-terraform-state-577881328002"
     key            = "internal-test/terraform.tfstate"
     region         = "us-east-2"
     encrypt        = true

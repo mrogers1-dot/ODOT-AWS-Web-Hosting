@@ -87,8 +87,10 @@ AWS Organizations (Management Account)
 - **WAF managed rules on external ALBs** — OWASP Top 10, SQLi, rate limiting
 - **HTTPS everywhere** — TLS 1.3 with automatic ACM certificate management
 - **Module-per-concern** — reusable Terraform modules shared across all six stacks
+- **Split-account state** — each account owns its own Terraform state bucket and lock table
 - **Policy-as-code** — tfsec + OPA/Conftest gate on every platform PR
 - **Least-privilege IAM** — scoped roles for GitHub Actions, ECS tasks, and dashboard
+- **SSO-only access** — IAM Identity Center with named CLI profiles, no long-lived credentials
 
 ---
 
@@ -123,14 +125,26 @@ AWS Organizations (Management Account)
 ### Fastest Path to Deployment
 
 ```bash
-# 1. Bootstrap Terraform backend (one-time)
-./odot-aws-platform/scripts/bootstrap-backend.sh <MGMT_ACCOUNT_ID>
+# 0. Configure SSO profiles (one-time)
+aws configure sso                          # → profile: odot-internal (577881328002)
+aws configure sso --profile odot-external  # → profile: odot-external (549136075921)
 
-# 2. Configure backend.tf files
-./odot-aws-platform/scripts/configure-backend.sh <MGMT_ACCOUNT_ID>
+# 1. Bootstrap Terraform backend (both accounts)
+export AWS_PROFILE=odot-internal
+./odot-aws-platform/scripts/bootstrap-backend.sh 577881328002
+
+export AWS_PROFILE=odot-external
+./odot-aws-platform/scripts/bootstrap-backend.sh 549136075921
+
+# 2. Configure backend.tf files (split-account mode)
+./odot-aws-platform/scripts/configure-backend.sh --internal 577881328002 --external 549136075921
 
 # 3. Deploy all platform stacks
-./odot-aws-platform/scripts/deploy-platform.sh
+export AWS_PROFILE=odot-internal
+./odot-aws-platform/scripts/deploy-platform.sh internal
+
+export AWS_PROFILE=odot-external
+./odot-aws-platform/scripts/deploy-platform.sh external
 
 # 4. Collect outputs for app teams
 ./odot-aws-platform/scripts/collect-stack-outputs.sh
@@ -157,8 +171,8 @@ For the full step-by-step walkthrough, see [DEPLOYMENT-PREREQUISITES.md](DEPLOYM
 
 | Script | Purpose |
 |--------|---------|
-| `bootstrap-backend.sh` | Create S3 state bucket + DynamoDB lock table |
-| `configure-backend.sh` | Replace account ID placeholder in all backend.tf files |
+| `bootstrap-backend.sh` | Create S3 state bucket + DynamoDB lock table (run per account) |
+| `configure-backend.sh` | Replace account ID placeholder in all backend.tf files (supports split-account mode) |
 | `deploy-platform.sh` | Deploy all stacks in correct dependency order |
 | `collect-stack-outputs.sh` | Export Terraform outputs to a single JSON file |
 | `onboard-app.sh` | Full app onboarding: repo, tfvars, GitHub vars, branches |

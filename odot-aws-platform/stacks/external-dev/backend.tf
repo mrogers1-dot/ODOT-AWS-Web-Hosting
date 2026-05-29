@@ -1,11 +1,9 @@
 # Backend configuration for the external-dev stack.
-# Replace MGMT_ACCOUNT_ID with the actual management account ID before running
-# `terraform init`. Run scripts/bootstrap-backend.sh first if the S3 bucket
-# and DynamoDB table do not yet exist.
+# State is stored in the External account (549136075921).
 
 terraform {
   backend "s3" {
-    bucket         = "odot-terraform-state-MGMT_ACCOUNT_ID"
+    bucket         = "odot-terraform-state-549136075921"
     key            = "external-dev/terraform.tfstate"
     region         = "us-east-2"
     encrypt        = true

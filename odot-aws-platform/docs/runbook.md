@@ -27,7 +27,7 @@ Use the `odot-app-template` GitHub repository template to bootstrap a new web ap
 ### Prerequisites
 
 - Access to the ODOT GitHub Enterprise organization
-- AWS CLI configured with credentials for the target account (via Identity Center SSO)
+- AWS CLI configured with SSO profiles (`odot-internal` for account 577881328002, `odot-external` for account 549136075921)
 - Terraform >= 1.5.0 installed
 - Platform infrastructure already deployed (VPC, ECS cluster, KMS key, SNS topic exist)
 
@@ -73,13 +73,15 @@ Use the `odot-app-template` GitHub repository template to bootstrap a new web ap
 3. Configure the S3 backend in `terraform/main.tf`:
    ```hcl
    backend "s3" {
-     bucket         = "odot-terraform-state-MGMT-ACCOUNT-ID"
+     bucket         = "odot-terraform-state-549136075921"  # Use account ID matching your account_type
      key            = "apps/permit-portal/terraform.tfstate"
      region         = "us-east-2"
      dynamodb_table = "odot-terraform-locks"
      encrypt        = true
    }
    ```
+   
+   Use `577881328002` for internal apps or `549136075921` for external apps.
 
 **Step 3: Provision AWS resources**
 

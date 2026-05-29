@@ -1,11 +1,10 @@
 # Root backend configuration — used for management-level resources.
-# Replace MGMT_ACCOUNT_ID with the actual AWS management account ID
-# (e.g., the account that owns the odot-terraform-state bucket).
-# Run scripts/bootstrap-backend.sh once before the first `terraform init`.
+# State is stored in the Internal account (577881328002).
+# Run scripts/bootstrap-backend.sh 577881328002 once before the first `terraform init`.
 
 terraform {
   backend "s3" {
-    bucket         = "odot-terraform-state-MGMT_ACCOUNT_ID"
+    bucket         = "odot-terraform-state-577881328002"
     key            = "management/terraform.tfstate"
     region         = "us-east-2"
     encrypt        = true

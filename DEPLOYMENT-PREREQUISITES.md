@@ -10,8 +10,8 @@ Most manual steps in this guide have been automated. Here's a quick reference:
 
 | Script | Replaces Manual Step | Usage |
 |--------|---------------------|-------|
-| `scripts/bootstrap-backend.sh` | S3 bucket + DynamoDB table creation | `./scripts/bootstrap-backend.sh <ACCOUNT_ID>` |
-| `scripts/configure-backend.sh` | Find/replace MGMT_ACCOUNT_ID in all backend.tf | `./scripts/configure-backend.sh <ACCOUNT_ID>` |
+| `scripts/bootstrap-backend.sh` | S3 bucket + DynamoDB table creation | `./scripts/bootstrap-backend.sh <ACCOUNT_ID>` (run per account) |
+| `scripts/configure-backend.sh` | Find/replace MGMT_ACCOUNT_ID in all backend.tf | `./scripts/configure-backend.sh --internal 577881328002 --external 549136075921` |
 | `scripts/deploy-platform.sh` | Deploying stacks one-by-one in order | `./scripts/deploy-platform.sh [stack-filter]` |
 | `scripts/collect-stack-outputs.sh` | Manually copying Terraform outputs | `./scripts/collect-stack-outputs.sh` |
 | `scripts/onboard-app.sh` | Repo creation, tfvars, GitHub vars, branches | `./scripts/onboard-app.sh --app-name ... --account-type ... --github-org ...` |
@@ -20,25 +20,37 @@ Most manual steps in this guide have been automated. Here's a quick reference:
 **Fastest path (after AWS accounts exist):**
 
 ```bash
-# 1. Bootstrap backend
-./scripts/bootstrap-backend.sh 123456789012
+# 1. Configure SSO profiles
+aws configure sso   # Set up odot-internal profile
+aws configure sso --profile odot-external   # Set up odot-external profile
 
-# 2. Configure all backend.tf files
-./scripts/configure-backend.sh 123456789012
+# 2. Bootstrap backend (both accounts)
+export AWS_PROFILE=odot-internal
+./scripts/bootstrap-backend.sh 577881328002
 
-# 3. Deploy all platform stacks
-./scripts/deploy-platform.sh
+export AWS_PROFILE=odot-external
+./scripts/bootstrap-backend.sh 549136075921
 
-# 4. Collect outputs for app teams
+# 3. Configure all backend.tf files (split-account mode)
+./scripts/configure-backend.sh --internal 577881328002 --external 549136075921
+
+# 4. Deploy all platform stacks
+export AWS_PROFILE=odot-internal
+./scripts/deploy-platform.sh internal
+
+export AWS_PROFILE=odot-external
+./scripts/deploy-platform.sh external
+
+# 5. Collect outputs for app teams
 ./scripts/collect-stack-outputs.sh
 
-# 5. Onboard a new application
+# 6. Onboard a new application
 ./scripts/onboard-app.sh \
   --app-name "fleet-tracker" \
   --account-type "internal" \
   --github-org "ODOT-GitHub-Org"
 
-# 6. Verify everything is ready
+# 7. Verify everything is ready
 ./scripts/verify-prerequisites.sh \
   --app-name "fleet-tracker" \
   --account-type "internal" \
@@ -112,57 +124,149 @@ Complete these steps in **both** the Internal and External accounts:
 - [ ] **AWS Region** set to `us-east-2` (Ohio) — all resources deploy here
 - [ ] **Resource quotas** reviewed for ECS tasks, ALBs, and VPCs (request increases if needed)
 
-### Management Account
+### IAM Identity Center (SSO) Setup
 
-A management account is needed for:
-- Hosting the Terraform state bucket and DynamoDB lock table
-- AWS Organizations policies (SCPs)
-- Cross-account role assumption
+IAM Identity Center is already enabled at the AWS Organization level. Each team member authenticates via the SSO portal and receives temporary credentials — no long-lived access keys are stored locally.
+
+**Setting up your local CLI profiles:**
+
+```bash
+aws configure sso
+```
+
+When prompted, provide:
+
+| Prompt | Internal Account | External Account |
+|--------|-----------------|-----------------|
+| SSO session name | `odot-sso` | `odot-sso` |
+| SSO start URL | Your org's SSO start URL | Same |
+| SSO region | `us-east-2` | `us-east-2` |
+| Account | `577881328002` (DOT-Web-Internal) | `549136075921` (DOT-Web-External) |
+| Role | Your assigned permission set | Your assigned permission set |
+| CLI default region | `us-east-2` | `us-east-2` |
+| CLI default output | `json` | `json` |
+| Profile name | `odot-internal` | `odot-external` |
+
+After configuration, your `~/.aws/config` will contain:
+
+```ini
+[profile odot-internal]
+sso_start_url = https://your-sso-url.awsapps.com/start
+sso_region = us-east-2
+sso_account_id = 577881328002
+sso_role_name = YourPermissionSetName
+region = us-east-2
+
+[profile odot-external]
+sso_start_url = https://your-sso-url.awsapps.com/start
+sso_region = us-east-2
+sso_account_id = 549136075921
+sso_role_name = YourPermissionSetName
+region = us-east-2
+```
+
+**Logging in:**
+
+```bash
+aws sso login --profile odot-internal
+aws sso login --profile odot-external
+```
+
+**Verifying access:**
+
+```bash
+aws sts get-caller-identity --profile odot-internal
+# Should show Account: 577881328002
+
+aws sts get-caller-identity --profile odot-external
+# Should show Account: 549136075921
+```
+
+**Using profiles with Terraform:**
+
+```bash
+export AWS_PROFILE=odot-internal   # For internal stacks
+export AWS_PROFILE=odot-external   # For external stacks
+```
+
+When your session expires, re-authenticate with `aws sso login --profile <name>`. No reconfiguration needed.
+
+### Terraform State Storage (Split-Account)
+
+Each account hosts its own Terraform state — there is no separate management account:
+
+| Account | State Bucket | DynamoDB Lock Table | Stores State For |
+|---------|-------------|--------------------|--------------------|
+| DOT-Web-Internal (577881328002) | `odot-terraform-state-577881328002` | `odot-terraform-locks` | Root backend, `internal-dev`, `internal-test`, `internal-prod` |
+| DOT-Web-External (549136075921) | `odot-terraform-state-549136075921` | `odot-terraform-locks` | `external-dev`, `external-test`, `external-prod` |
+
+This provides full isolation — each account owns its own state and lock table.
 
 ---
 
 ## 3. Terraform Backend Bootstrap
 
-The Terraform remote backend must be created **once** before any `terraform init` will succeed.
+The Terraform remote backend must be created in **both** AWS accounts before any `terraform init` will succeed. Each account hosts its own state.
 
-### Run the Bootstrap Script
+### Run the Bootstrap Script (Both Accounts)
 
 ```bash
+# Bootstrap the Internal account
+export AWS_PROFILE=odot-internal
 cd odot-aws-platform/scripts
-./bootstrap-backend.sh <MGMT_ACCOUNT_ID>
+./bootstrap-backend.sh 577881328002
+
+# Bootstrap the External account
+export AWS_PROFILE=odot-external
+./bootstrap-backend.sh 549136075921
 ```
 
-This creates:
-- **S3 bucket**: `odot-terraform-state-<MGMT_ACCOUNT_ID>` (versioned, encrypted, public access blocked)
+Each run creates:
+- **S3 bucket**: `odot-terraform-state-<ACCOUNT_ID>` (versioned, encrypted, public access blocked)
 - **DynamoDB table**: `odot-terraform-locks` (partition key: `LockID`)
 
 ### Update Backend Configuration
 
-**Automated:** Run the configure script to replace `MGMT_ACCOUNT_ID` in all backend.tf files at once:
+The backend.tf files are pre-configured with the correct account IDs:
+
+| File | State Bucket |
+|------|-------------|
+| `backend.tf` (root) | `odot-terraform-state-577881328002` |
+| `stacks/internal-dev/backend.tf` | `odot-terraform-state-577881328002` |
+| `stacks/internal-test/backend.tf` | `odot-terraform-state-577881328002` |
+| `stacks/internal-prod/backend.tf` | `odot-terraform-state-577881328002` |
+| `stacks/external-dev/backend.tf` | `odot-terraform-state-549136075921` |
+| `stacks/external-test/backend.tf` | `odot-terraform-state-549136075921` |
+| `stacks/external-prod/backend.tf` | `odot-terraform-state-549136075921` |
+
+**If you need to reconfigure** (e.g., from a fresh clone), use the configure script with split-account mode:
 
 ```bash
-./scripts/configure-backend.sh <MGMT_ACCOUNT_ID>
+./scripts/configure-backend.sh --internal 577881328002 --external 549136075921
 ```
 
-This updates all of the following files automatically:
-- `odot-aws-platform/backend.tf`
-- `odot-aws-platform/stacks/internal-dev/backend.tf`
-- `odot-aws-platform/stacks/internal-test/backend.tf`
-- `odot-aws-platform/stacks/internal-prod/backend.tf`
-- `odot-aws-platform/stacks/external-dev/backend.tf`
-- `odot-aws-platform/stacks/external-test/backend.tf`
-- `odot-aws-platform/stacks/external-prod/backend.tf`
+This replaces `MGMT_ACCOUNT_ID` placeholders in all backend.tf files, routing internal stacks to the internal account bucket and external stacks to the external account bucket.
 
-The script is idempotent — re-running it on already-configured files is safe.
+The script also supports single-account mode for backward compatibility:
+```bash
+./scripts/configure-backend.sh <ACCOUNT_ID>   # Uses same ID for all files
+```
 
 ### Verify Backend Access
 
 ```bash
+# Verify internal backend
+export AWS_PROFILE=odot-internal
 cd odot-aws-platform
+terraform init
+
+# Verify external backend
+export AWS_PROFILE=odot-external
+cd stacks/external-dev
 terraform init
 ```
 
-If this succeeds without errors, the backend is correctly configured.
+If these succeed without errors, the backends are correctly configured.
 
 ---
 
@@ -341,13 +445,16 @@ cd odot-aws-platform
 # Plan all stacks (review without applying)
 ./scripts/deploy-platform.sh --plan-only
 
-# Deploy all stacks in order
-./scripts/deploy-platform.sh
-
-# Deploy only internal stacks
+# Deploy internal stacks (requires odot-internal profile)
+export AWS_PROFILE=odot-internal
 ./scripts/deploy-platform.sh internal
 
+# Deploy external stacks (requires odot-external profile)
+export AWS_PROFILE=odot-external
+./scripts/deploy-platform.sh external
+
 # Deploy a single stack
+export AWS_PROFILE=odot-internal
 ./scripts/deploy-platform.sh internal-dev
 ```
 
@@ -367,6 +474,10 @@ Each stack provisions: Networking → Security → OIDC → ECS Cluster → Moni
 If you prefer to deploy stacks individually:
 
 ```bash
+# Set the correct profile for the target account
+export AWS_PROFILE=odot-internal   # For internal-* stacks
+# export AWS_PROFILE=odot-external # For external-* stacks
+
 cd odot-aws-platform/stacks/internal-dev
 terraform init
 terraform plan    # Review carefully
@@ -480,6 +591,10 @@ backend "s3" {
 }
 ```
 
+Use the account ID matching your target account:
+- Internal apps → `577881328002`
+- External apps → `549136075921`
+
 #### Step 4: Provision App Infrastructure
 
 ```bash
@@ -565,9 +680,10 @@ Use this if you prefer to verify manually or need to check items the script can'
 
 ### AWS Prerequisites
 
-- [ ] Management account has S3 state bucket and DynamoDB lock table
-- [ ] Internal account (577881328002) is accessible via IAM Identity Center
-- [ ] External account (549136075921) is accessible via IAM Identity Center
+- [ ] Internal account has S3 state bucket (`odot-terraform-state-577881328002`) and DynamoDB lock table
+- [ ] External account has S3 state bucket (`odot-terraform-state-549136075921`) and DynamoDB lock table
+- [ ] Internal account (577881328002) is accessible via IAM Identity Center (`aws sts get-caller-identity --profile odot-internal`)
+- [ ] External account (549136075921) is accessible via IAM Identity Center (`aws sts get-caller-identity --profile odot-external`)
 - [ ] Service-linked roles exist for ECS and ELB in both accounts
 - [ ] OIDC identity provider is deployed in target account(s)
 - [ ] IAM role `odot-github-actions-{type}` exists with correct trust policy

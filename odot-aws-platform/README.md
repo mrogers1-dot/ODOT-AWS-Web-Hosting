@@ -18,7 +18,7 @@ Key characteristics:
 - **OIDC authentication** — GitHub Actions authenticates to AWS via federation (no stored credentials)
 - **Policy-as-code** — tfsec + OPA/Conftest gate on every platform PR
 - **NIST 800-53 aligned** — Security Hub with both FSBP and NIST standards
-- **S3 + DynamoDB backend** — remote state with locking and versioning
+- **S3 + DynamoDB backend** — remote state with locking and versioning (split per account)
 
 ---
 
@@ -100,7 +100,7 @@ odot-aws-platform/
 │   └── runbook.md          # Operational procedures
 ├── .github/workflows/
 │   └── platform-ci.yml    # tfsec + OPA + Go tests on every PR
-├── backend.tf              # Root backend config (management account)
+├── backend.tf              # Root backend config (internal account state)
 └── versions.tf             # Required Terraform and provider versions
 ```
 
@@ -111,37 +111,68 @@ odot-aws-platform/
 - [Terraform](https://www.terraform.io/downloads) >= 1.5.0
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
 - [Go](https://go.dev/dl/) >= 1.21 (for running tests)
-- AWS credentials with access to the management account (for bootstrap) and assume-role permissions into both workload accounts
+- AWS IAM Identity Center (SSO) profiles configured for both accounts (see below)
 - Access to the ODOT GitHub Enterprise organization
 
 ---
 
 ## Getting Started
 
-### 1. Bootstrap the Terraform Backend
+### 0. Configure AWS SSO Profiles
 
-Run this once per management account to create the S3 state bucket and DynamoDB lock table:
+Set up named CLI profiles for each account:
 
 ```bash
-./scripts/bootstrap-backend.sh <MGMT_ACCOUNT_ID>
+aws configure sso
+# SSO session name: odot-sso
+# SSO start URL: https://your-sso-url.awsapps.com/start
+# SSO region: us-east-2
+# Select account 577881328002 → profile name: odot-internal
+
+aws configure sso --profile odot-external
+# Same SSO session, select account 549136075921 → profile name: odot-external
 ```
 
-This creates:
-- S3 bucket: `odot-terraform-state-<MGMT_ACCOUNT_ID>` (versioned, encrypted, public access blocked)
+Verify:
+```bash
+aws sts get-caller-identity --profile odot-internal
+aws sts get-caller-identity --profile odot-external
+```
+
+### 1. Bootstrap the Terraform Backend (Both Accounts)
+
+Each account hosts its own state bucket and lock table:
+
+```bash
+# Internal account
+export AWS_PROFILE=odot-internal
+./scripts/bootstrap-backend.sh 577881328002
+
+# External account
+export AWS_PROFILE=odot-external
+./scripts/bootstrap-backend.sh 549136075921
+```
+
+Each creates:
+- S3 bucket: `odot-terraform-state-<ACCOUNT_ID>` (versioned, encrypted, public access blocked)
 - DynamoDB table: `odot-terraform-locks` (partition key: `LockID`)
 
-### 2. Update Backend Configuration
+### 2. Update Backend Configuration (If Starting Fresh)
 
-Replace `MGMT_ACCOUNT_ID` in all `backend.tf` files with your actual management account ID:
+Backend.tf files are pre-configured with the correct account IDs. If you need to reconfigure from a fresh clone:
 
-- `backend.tf` (root)
-- `stacks/*/backend.tf` (all six stacks)
+```bash
+./scripts/configure-backend.sh --internal 577881328002 --external 549136075921
+```
+
+This routes internal stacks to the internal account bucket and external stacks to the external account bucket.
 
 ### 3. Initialize and Deploy a Stack
 
 Navigate to the desired stack directory and run:
 
 ```bash
+export AWS_PROFILE=odot-internal   # or odot-external for external stacks
 cd stacks/internal-dev
 
 terraform init
@@ -251,21 +282,25 @@ Establishes the GitHub OIDC identity provider and IAM roles for GitHub Actions.
 
 ## Stack Deployment
 
-Each stack in `stacks/` represents one account-stage combination with its own Terraform state file:
+Each stack in `stacks/` represents one account-stage combination with its own Terraform state file. State is stored in the same account the stack deploys to:
 
-| Stack | Account | Stage | State Key |
-|-------|---------|-------|-----------|
-| `stacks/internal-dev/` | DOT-Web-Internal (577881328002) | Dev | `internal-dev/terraform.tfstate` |
-| `stacks/internal-test/` | DOT-Web-Internal (577881328002) | Test | `internal-test/terraform.tfstate` |
-| `stacks/internal-prod/` | DOT-Web-Internal (577881328002) | Prod | `internal-prod/terraform.tfstate` |
-| `stacks/external-dev/` | DOT-Web-External (549136075921) | Dev | `external-dev/terraform.tfstate` |
-| `stacks/external-test/` | DOT-Web-External (549136075921) | Test | `external-test/terraform.tfstate` |
-| `stacks/external-prod/` | DOT-Web-External (549136075921) | Prod | `external-prod/terraform.tfstate` |
+| Stack | Account | Stage | State Bucket | State Key |
+|-------|---------|-------|-------------|-----------|
+| `stacks/internal-dev/` | DOT-Web-Internal (577881328002) | Dev | `odot-terraform-state-577881328002` | `internal-dev/terraform.tfstate` |
+| `stacks/internal-test/` | DOT-Web-Internal (577881328002) | Test | `odot-terraform-state-577881328002` | `internal-test/terraform.tfstate` |
+| `stacks/internal-prod/` | DOT-Web-Internal (577881328002) | Prod | `odot-terraform-state-577881328002` | `internal-prod/terraform.tfstate` |
+| `stacks/external-dev/` | DOT-Web-External (549136075921) | Dev | `odot-terraform-state-549136075921` | `external-dev/terraform.tfstate` |
+| `stacks/external-test/` | DOT-Web-External (549136075921) | Test | `odot-terraform-state-549136075921` | `external-test/terraform.tfstate` |
+| `stacks/external-prod/` | DOT-Web-External (549136075921) | Prod | `odot-terraform-state-549136075921` | `external-prod/terraform.tfstate` |
 
 ### Deploy a Stack
 
 ```bash
 cd stacks/<stack-name>
+
+# Set the correct profile for the target account
+export AWS_PROFILE=odot-internal   # For internal-* stacks
+# export AWS_PROFILE=odot-external # For external-* stacks
 
 # Initialize providers and backend
 terraform init
@@ -282,10 +317,21 @@ terraform destroy
 
 ### Deploy All Stacks
 
-Deploy stacks in order — internal first, then external:
+Deploy stacks in order — internal first, then external. Switch profiles between account boundaries:
 
 ```bash
-for stack in internal-dev internal-test internal-prod external-dev external-test external-prod; do
+# Internal stacks
+export AWS_PROFILE=odot-internal
+for stack in internal-dev internal-test internal-prod; do
+  cd stacks/$stack
+  terraform init
+  terraform apply -auto-approve
+  cd ../..
+done
+
+# External stacks
+export AWS_PROFILE=odot-external
+for stack in external-dev external-test external-prod; do
   cd stacks/$stack
   terraform init
   terraform apply -auto-approve
@@ -330,8 +376,8 @@ Tests operate on `terraform plan` JSON output — no AWS credentials are require
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/bootstrap-backend.sh` | One-time setup of S3 state bucket and DynamoDB lock table |
-| `scripts/configure-backend.sh` | Replace MGMT_ACCOUNT_ID placeholder in all backend.tf files |
+| `scripts/bootstrap-backend.sh` | One-time setup of S3 state bucket and DynamoDB lock table (run per account) |
+| `scripts/configure-backend.sh` | Replace MGMT_ACCOUNT_ID placeholder in all backend.tf files (supports split-account mode) |
 | `scripts/deploy-platform.sh` | Deploy all platform stacks in correct dependency order |
 | `scripts/collect-stack-outputs.sh` | Collect Terraform outputs from all stacks into one JSON file |
 | `scripts/onboard-app.sh` | Automate full application onboarding (repo, tfvars, GitHub vars, branches) |
