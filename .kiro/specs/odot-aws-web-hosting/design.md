@@ -195,6 +195,7 @@ odot-app-template/                    # Developer self-service template reposito
 - Sets `readonlyRootFilesystem = true` and `user = "1000"` (non-root) on all container definitions.
 - Windows runtime: sets `runtimePlatform { operatingSystemFamily = "WINDOWS_SERVER_2019_CORE", cpuArchitecture = "X86_64" }`.
 - External account: creates `aws_wafv2_web_acl_association` linking WAF ACL to ALB. This resource is created before the ALB listener is active.
+- External account: AWS Shield Standard is automatically enabled on all ALBs at no additional cost and requires no explicit Terraform resource. Verification is handled by the smoke test (`aws shield describe-protection`) to satisfy Requirement 3.4.
 - ECR lifecycle policy: rule 1 — tagged images, `countType = imageCountMoreThan`, `countNumber = 10`; rule 2 — untagged images, `countType = sinceImagePushed`, `countNumber = 7` days.
 - Auto-scaling: `min_capacity = 2`, `max_capacity = 50`. Scale-out: CPU or memory > 70% for 3 minutes. Scale-in: CPU and memory < 30% for 10 minutes.
 - CloudWatch log group retention: 90 days for dev/test, 365 days for prod.
@@ -214,7 +215,7 @@ odot-app-template/                    # Developer self-service template reposito
 - Enables AWS Config with a delivery channel to an S3 bucket; creates managed rules for `vpc-default-security-group-closed`, `iam-no-inline-policy`, `ecs-task-definition-nonroot-user`, and `ecs-task-definition-memory-hard-limit`.
 - Enables Macie with a classification job scanning all S3 buckets in the account.
 - SCPs are applied at the Organizations level (managed in the management account stack):
-  - `scp-internal-no-igw.json`: Denies `ec2:CreateInternetGateway`, `ec2:AttachInternetGateway`, `ec2:CreateVpc` with public CIDR, and `elasticloadbalancing:CreateLoadBalancer` with `scheme=internet-facing`.
+  - `scp-internal-no-igw.json`: Denies `ec2:CreateInternetGateway`, `ec2:AttachInternetGateway`, `ec2:CreateVpc` with public CIDR, and `elasticloadbalancing:CreateLoadBalancer` with `scheme=internet-facing`. **Note on Req 2.5 (public route rejection)**: The SCP does not explicitly deny `ec2:CreateRoute` with `0.0.0.0/0` because denying IGW creation and attachment makes any such route non-functional — there is no gateway target to route to. This layered defense (prevent the gateway, not just the route) is sufficient to satisfy the requirement while keeping the SCP simple and auditable.
   - `scp-external-waf-required.json`: Denies `elasticloadbalancing:CreateLoadBalancer` unless the request includes a WAF association condition (enforced via Config rule + Lambda auto-remediation, as SCPs cannot inspect resource attributes at creation time — see Error Handling).
 
 ### 5. Terraform Module: `monitoring`
@@ -628,3 +629,451 @@ go test ./integration/... -v -timeout 30m
 ./scripts/smoke-test.sh internal prod
 ./scripts/smoke-test.sh external prod
 ```
+
+---
+
+## Component 8: Admin Operations Dashboard
+
+### Overview
+
+A hosted web application providing real-time operational visibility and administrative actions across all platform applications. The dashboard is itself hosted on the platform (Internal_Account, ECS Fargate) and authenticated via Okta/Cognito.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Internal Account (VPN/Direct Connect access only)          │
+│                                                             │
+│  ┌──────────────┐     ┌──────────────────────────────────┐ │
+│  │  Cognito     │◄────│  Okta (OIDC Federation)          │ │
+│  │  User Pool   │     │  Groups: ODOT-Web-Developers     │ │
+│  │              │     │          ODOT-Web-Admins          │ │
+│  └──────┬───────┘     └──────────────────────────────────┘ │
+│         │ JWT (custom:role claim)                           │
+│  ┌──────▼──────────────────────────────────────────────┐   │
+│  │  Admin Dashboard (ECS Fargate)                      │   │
+│  │  ┌──────────────┐  ┌─────────────────────────────┐ │   │
+│  │  │  Frontend    │  │  Backend API (Express)       │ │   │
+│  │  │  React +     │  │  /api/apps         (list)   │ │   │
+│  │  │  Tailwind    │  │  /api/apps/:id     (detail) │ │   │
+│  │  │  TypeScript  │  │  /api/apps/:id/actions      │ │   │
+│  │  │              │  │  /api/audit        (logs)   │ │   │
+│  │  └──────────────┘  └──────────┬──────────────────┘ │   │
+│  └─────────────────────────────────┼───────────────────┘   │
+│                                    │                        │
+│         ┌──────────────────────────┼────────────┐          │
+│         │                          │            │          │
+│         ▼                          ▼            ▼          │
+│  Internal ECS Clusters    DynamoDB Audit   SNS Topic       │
+│  (direct API calls)       Table            (Slack notify)  │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+         │
+         │ AssumeRole (cross-account)
+         ▼
+┌─────────────────────────────────────────────────────────────┐
+│  External Account                                           │
+│  External ECS Clusters, ALBs, WAF, CloudWatch               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Tech Stack
+
+| Layer | Technology | Rationale |
+|---|---|---|
+| Frontend | React 18 + TypeScript + Tailwind CSS | Modern, fast, utility-first styling |
+| Charts | Recharts or Chart.js | Lightweight, React-native charting |
+| Backend | Node.js 20 + Express + TypeScript | Same runtime as frontend, fast API development |
+| Auth | Amazon Cognito + Okta OIDC | AWS-native token validation, Okta as IdP |
+| Audit | DynamoDB | Serverless, auto-scaling, pay-per-request |
+| Notifications | SNS → Chatbot → Slack | Reuses existing platform notification path |
+| Container | Multi-stage Docker (node:20-alpine) | Minimal image size, non-root user |
+
+### API Design
+
+#### Authentication Flow
+
+1. User navigates to dashboard URL (internal ALB DNS)
+2. Frontend redirects to Cognito hosted UI → Okta login
+3. Okta authenticates user, returns authorization code
+4. Cognito exchanges code for tokens (ID token + access token)
+5. Frontend stores tokens, sends `Authorization: Bearer {id_token}` on all API calls
+6. Backend validates JWT signature against Cognito JWKS, extracts `custom:role` claim
+
+#### API Endpoints
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/api/apps` | Any | List all apps with status summary |
+| GET | `/api/apps/:appName` | Any | App detail (metrics, tasks, config) |
+| GET | `/api/apps/:appName/logs?stage=&lines=` | Any | Recent CloudWatch logs |
+| POST | `/api/apps/:appName/logs/search` | Any | CloudWatch Logs Insights query |
+| GET | `/api/apps/:appName/tasks?stage=` | Any | Running tasks list |
+| GET | `/api/apps/:appName/health?stage=` | Any | ALB target health |
+| GET | `/api/apps/:appName/deployments?stage=` | Any | Deployment history |
+| GET | `/api/apps/:appName/images` | Any | ECR images with scan status |
+| GET | `/api/apps/:appName/scaling?stage=` | Any | Scaling activity |
+| GET | `/api/apps/:appName/env?stage=` | Any | Env vars (secrets masked) |
+| POST | `/api/apps/:appName/restart` | Dev/Test: Developer; Prod: Admin | Force new deployment |
+| POST | `/api/apps/:appName/stop` | Dev/Test: Developer; Prod: Admin | Set desired=0 |
+| POST | `/api/apps/:appName/start` | Dev/Test: Developer; Prod: Admin | Restore desired count |
+| POST | `/api/apps/:appName/scale` | Dev/Test: Developer; Prod: Admin | Scale up/down |
+| POST | `/api/apps/:appName/stop-task` | Dev/Test: Developer; Prod: Admin | Kill specific task |
+| POST | `/api/apps/:appName/rollback` | Admin only | Rollback to previous revision |
+| POST | `/api/apps/:appName/maintenance` | Dev/Test: Developer; Prod: Admin | Toggle maintenance mode |
+| POST | `/api/apps/:appName/block-ip` | Admin only | Add IP to WAF block list |
+| DELETE | `/api/apps/:appName/block-ip` | Admin only | Remove IP from WAF block list |
+| POST | `/api/apps/:appName/autoscaling/disable` | Dev/Test: Developer; Prod: Admin | Freeze scaling |
+| POST | `/api/apps/:appName/autoscaling/enable` | Dev/Test: Developer; Prod: Admin | Restore scaling |
+| POST | `/api/apps/:appName/autoscaling/override` | Dev/Test: Developer; Prod: Admin | Override min/max |
+| GET | `/api/audit` | Any | View audit log |
+
+#### Request/Response Examples
+
+**POST `/api/apps/fleet-tracker/restart`**
+```json
+// Request
+{ "stage": "dev" }
+
+// Response (200)
+{ "success": true, "message": "Restart initiated for fleet-tracker in dev", "deploymentId": "ecs-svc/123..." }
+
+// Response (403)
+{ "error": "insufficient_permissions", "message": "Admin role required for Prod actions" }
+```
+
+**POST `/api/apps/fleet-tracker/scale`**
+```json
+// Request
+{ "stage": "test", "direction": "up", "count": 2 }
+
+// Response (200)
+{ "success": true, "message": "Scaled fleet-tracker in test from 2 to 4 tasks", "newDesiredCount": 4 }
+```
+
+#### Environment Variable Masking Logic
+
+The `GET /api/apps/:appName/env?stage=` endpoint retrieves environment variables from the active ECS task definition. The masking behavior distinguishes between two sources:
+
+- **Plain environment variables** (task definition `environment` field — key-value pairs): Returned in full, unmasked. These are non-sensitive configuration values (e.g., `NODE_ENV=production`, `PORT=3000`).
+- **Secret references** (task definition `secrets` field — references to SSM Parameter Store or Secrets Manager ARNs): The key name is returned, but the value is replaced with `***REDACTED***`. The ARN source is included for reference.
+
+```typescript
+interface EnvVarResponse {
+  environment: { name: string; value: string }[];
+  secrets: { name: string; valueFrom: string; maskedValue: '***REDACTED***' }[];
+}
+```
+
+This ensures operators can see what configuration is applied without exposing secret material through the dashboard UI. The backend never resolves secret ARNs to their actual values — it only reads the task definition metadata.
+
+### Data Models
+
+#### DynamoDB Audit Table: `odot-dashboard-audit`
+
+| Attribute | Type | Key | Description |
+|---|---|---|---|
+| `pk` | String | Partition Key | `{app_name}#{stage}` |
+| `sk` | String | Sort Key | ISO 8601 timestamp |
+| `user_email` | String | — | Okta user email |
+| `user_role` | String | — | `developer` or `admin` |
+| `action` | String | — | `restart`, `stop`, `start`, `scale_up`, `scale_down`, `stop_task`, `rollback`, `maintenance_on`, `maintenance_off`, `block_ip`, `unblock_ip`, `autoscaling_disable`, `autoscaling_enable`, `autoscaling_override` |
+| `parameters` | Map | — | Action-specific params (e.g., `{"count": 2}`, `{"ip": "1.2.3.4"}`) |
+| `outcome` | String | — | `success` or `failure` |
+| `error_message` | String | — | Error details (if failure) |
+| `ttl` | Number | — | Auto-expire after 365 days |
+
+GSI: `user-index` (partition: `user_email`, sort: `sk`) for querying actions by user.
+
+#### App Discovery
+
+The dashboard discovers applications by listing ECS services across all six clusters. Each service tagged with `Project = ODOTWebHosting` is included. The `app_name` is extracted from the service name pattern `{app_name}-{stage}`.
+
+### Status Determination Logic
+
+```typescript
+function determineStatus(app: AppMetrics): 'healthy' | 'degraded' | 'down' {
+  // Any stage with 0 running tasks = DOWN
+  if (app.stages.some(s => s.runningTasks === 0 && s.desiredTasks > 0)) return 'down';
+  // Any ALARM state on critical alarms = DOWN
+  if (app.alarms.some(a => a.state === 'ALARM' && a.severity === 'critical')) return 'down';
+  // Any WARNING or tasks < desired = DEGRADED
+  if (app.stages.some(s => s.runningTasks < s.desiredTasks)) return 'degraded';
+  if (app.alarms.some(a => a.state === 'ALARM')) return 'degraded';
+  return 'healthy';
+}
+```
+
+### Cross-Account IAM
+
+**Dashboard Task Role** (in Internal_Account):
+- `ecs:DescribeServices`, `ecs:ListServices`, `ecs:DescribeTasks`, `ecs:ListTasks`, `ecs:UpdateService`, `ecs:StopTask` — scoped to `WebHosting-*` clusters
+- `ecs:DescribeTaskDefinition`, `ecs:RegisterTaskDefinition` — for rollback
+- `ecr:ListImages`, `ecr:DescribeImageScanFindings` — for image listing
+- `cloudwatch:GetMetricData`, `cloudwatch:DescribeAlarms` — for metrics
+- `logs:GetLogEvents`, `logs:StartQuery`, `logs:GetQueryResults` — for logs
+- `elasticloadbalancing:DescribeTargetHealth`, `elasticloadbalancing:ModifyRule` — for health + maintenance mode
+- `wafv2:UpdateIPSet`, `wafv2:GetIPSet` — for IP blocking (external only)
+- `application-autoscaling:Describe*`, `application-autoscaling:RegisterScalableTarget` — for scaling
+- `dynamodb:PutItem`, `dynamodb:Query` — for audit table
+- `sns:Publish` — for Slack notifications
+- `sts:AssumeRole` — to assume External_Account read/write role
+
+**Cross-Account Role** (in External_Account):
+- Same permissions as above, scoped to External_Account resources
+- Trust policy allows the dashboard task role from Internal_Account to assume it
+
+### Frontend Component Structure
+
+```
+admin-dashboard/
+├── src/
+│   ├── components/
+│   │   ├── Layout/           # Shell, nav, tabs
+│   │   ├── AppCard/          # Status card with sparkline
+│   │   ├── AppDetail/        # Detail page container
+│   │   ├── MetricsPanel/     # Charts and metrics display
+│   │   ├── ActionsPanel/     # Admin action buttons
+│   │   ├── LogViewer/        # Log stream and search
+│   │   ├── TaskList/         # Running tasks table
+│   │   ├── DeployHistory/    # Deployment timeline
+│   │   ├── ConfirmDialog/    # Reusable confirmation modal
+│   │   └── StatusBadge/      # Color-coded status indicator
+│   ├── hooks/
+│   │   ├── useAuth.ts        # Cognito auth state
+│   │   ├── useApps.ts        # App list polling
+│   │   ├── useAppDetail.ts   # Single app metrics
+│   │   └── useAction.ts      # Mutating action with confirmation
+│   ├── services/
+│   │   ├── api.ts            # Axios instance with auth headers
+│   │   └── auth.ts           # Cognito SDK wrapper
+│   ├── types/                # TypeScript interfaces
+│   └── App.tsx               # Router and layout
+├── server/
+│   ├── routes/
+│   │   ├── apps.ts           # App listing and detail
+│   │   ├── actions.ts        # Mutating actions
+│   │   ├── logs.ts           # Log viewing and search
+│   │   └── audit.ts          # Audit log queries
+│   ├── middleware/
+│   │   ├── auth.ts           # JWT validation + role extraction
+│   │   ├── rbac.ts           # Role-based access control
+│   │   └── auditLog.ts       # Auto-log all mutations
+│   ├── services/
+│   │   ├── ecs.ts            # ECS API wrapper
+│   │   ├── cloudwatch.ts     # CloudWatch metrics/logs
+│   │   ├── alb.ts            # ALB health and rules
+│   │   ├── waf.ts            # WAF IP set management
+│   │   ├── ecr.ts            # ECR image listing
+│   │   ├── autoscaling.ts    # Auto-scaling management
+│   │   └── crossAccount.ts   # STS assume role helper
+│   └── index.ts              # Express app entry point
+├── Dockerfile
+├── package.json
+├── tsconfig.json
+├── tailwind.config.js
+└── README.md
+```
+
+### Terraform Module: `modules/admin-dashboard`
+
+**Purpose**: Provisions the authentication, audit, and IAM resources specific to the Admin Dashboard.
+
+**Inputs**:
+| Variable | Type | Description |
+|---|---|---|
+| `okta_issuer_url` | `string` | Okta OIDC issuer URL |
+| `okta_client_id` | `string` | Okta app client ID |
+| `okta_client_secret` | `string` | Okta app client secret (sensitive) |
+| `callback_urls` | `list(string)` | Cognito callback URLs |
+| `internal_account_id` | `string` | Internal account ID |
+| `external_account_id` | `string` | External account ID |
+| `sns_topic_arn` | `string` | SNS topic for action notifications |
+| `tags` | `map(string)` | Resource tags |
+
+**Outputs**: `cognito_user_pool_id`, `cognito_app_client_id`, `cognito_domain`, `audit_table_name`, `dashboard_task_role_arn`, `cross_account_role_arn`
+
+**Resources created**:
+- `aws_cognito_user_pool` with Okta as federated IdP
+- `aws_cognito_user_pool_client` with authorization code flow
+- `aws_cognito_user_pool_domain` for hosted UI
+- `aws_cognito_identity_provider` (Okta OIDC)
+- `aws_dynamodb_table` for audit logs (PAY_PER_REQUEST, TTL enabled)
+- `aws_iam_role` for dashboard ECS task (with all required permissions)
+- `aws_iam_role` in External_Account (cross-account read/write)
+- `aws_wafv2_ip_set` for managed IP blocking
+
+### Error Handling
+
+| Scenario | Behavior |
+|---|---|
+| Okta unavailable | Cognito returns auth error; dashboard shows "Authentication service unavailable" |
+| Cross-account assume role fails | Actions on external apps return 503; internal apps still work |
+| ECS UpdateService fails | Action returns failure; audit log records error; Slack notification includes error |
+| DynamoDB write fails | Action still executes (audit is best-effort); error logged to CloudWatch |
+| WAF IP set at capacity (10,000 IPs) | Block IP returns error with message "IP set at capacity" |
+| Rollback with only 1 revision | Rollback returns error "No previous revision available" |
+
+---
+
+## Enhancement Design Addendum (Requirements 15–28)
+
+This addendum extends the original design with connectivity, TLS, hardening, resilience, observability, and dashboard enhancements. It is organized by the new requirement groups and preserves the module-per-concern architecture.
+
+### A. Private Connectivity — VPC Endpoints (Requirement 15)
+
+**Problem**: Internal-account VPCs have no IGW and no NAT by design. Fargate tasks still need to reach ECR (image pull), CloudWatch Logs (log delivery), Secrets Manager/SSM (config), and STS (cross-account/role). Without egress, task launches fail with `CannotPullContainerError`.
+
+**Design Decision**: Add a `vpc-endpoints` capability to the `networking` module, created only when `account_type = "internal"`. Zero-egress is preserved — no NAT, no IGW.
+
+**Endpoints provisioned (interface type, one ENI per AZ)**:
+
+| Endpoint Service | Purpose |
+|---|---|
+| `ecr.api` | ECR API calls (auth token, describe) |
+| `ecr.dkr` | Docker registry pull |
+| `logs` | CloudWatch Logs delivery (awslogs driver) |
+| `secretsmanager` | Secret retrieval for task definitions |
+| `ssm` | SSM Parameter Store config |
+| `ssmmessages` | ECS Exec / SSM session channel |
+| `sts` | AssumeRole for cross-account dashboard access |
+
+**S3 Gateway endpoint**: ECR stores image layers in S3. A Gateway endpoint (not interface) is associated with all private route tables. Gateway endpoints are free and route via route-table entries rather than ENIs.
+
+**Endpoint security group**: A dedicated SG allows inbound TCP 443 from the VPC CIDR only. `private_dns_enabled = true` ensures `*.amazonaws.com` service names resolve to endpoint private IPs, so application code and the ECS agent need no changes.
+
+```hcl
+# Conceptual — modules/networking, internal only
+locals {
+  interface_endpoints = [
+    "ecr.api", "ecr.dkr", "logs",
+    "secretsmanager", "ssm", "ssmmessages", "sts",
+  ]
+}
+resource "aws_vpc_endpoint" "interface" {
+  for_each            = local.is_internal ? toset(local.interface_endpoints) : []
+  vpc_id              = aws_vpc.main.id
+  service_name        = "com.amazonaws.${var.region}.${each.value}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = aws_subnet.private[*].id
+  security_group_ids  = [aws_security_group.vpc_endpoints[0].id]
+  private_dns_enabled = true
+}
+resource "aws_vpc_endpoint" "s3" {
+  count             = local.is_internal ? 1 : 0
+  vpc_id            = aws_vpc.main.id
+  service_name      = "com.amazonaws.${var.region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids   = aws_route_table.private[*].id
+}
+```
+
+**New networking output**: `vpc_endpoint_ids` (map of service → endpoint ID) for smoke-test verification.
+
+### B. TLS Termination and DNS (Requirement 16)
+
+**Design Decision**: The `app-service` module gains TLS as a first-class concern. New inputs: `domain_name`, `hosted_zone_id`, and an optional `certificate_arn` (if a cert is managed externally).
+
+- **ACM certificate**: Created per app via DNS validation (Route 53 validation records created automatically). Validated certs are a prerequisite for the HTTPS listener.
+- **HTTPS:443 listener**: Uses `ssl_policy = "ELBSecurityPolicy-TLS13-1-2-2021-06"` and forwards to the target group.
+- **HTTP:80 listener**: Replaced — instead of forwarding, it issues a `redirect` action (`status_code = "HTTP_301"`, `protocol = "HTTPS"`, `port = "443"`).
+- **Route 53 alias**: An A-record alias points `domain_name` at the ALB (`evaluate_target_health = true`).
+
+The original HTTP-forward listener in `alb.tf` is removed; the property test for WAF association is updated to assert against the HTTPS listener.
+
+### C. ALB Access Logging (Requirement 17)
+
+**Design Decision**: A new `log-archive` sub-resource set in the `app-service` module (or a shared `modules/log-bucket`) provisions:
+- An S3 bucket `odot-alb-logs-{account_type}-{stage}` with SSE, public-access-block, and a lifecycle policy (IA at 30 days, expire at 365).
+- A bucket policy granting the regional ELB account (`delivery.logs.amazonaws.com` + the region-specific ELB account ID) `s3:PutObject`.
+- ALB `access_logs { enabled = true, bucket = ..., prefix = app_name }`.
+
+The dashboard's user-stats panel (14.14) reads these logs via Athena or a parsing Lambda. For the POC, the dashboard backend reads recent log objects directly and aggregates source IP / path counts.
+
+### D. WAF Managed Rules (Requirement 18)
+
+**Design Decision**: The WAF Web ACL (referenced by external stacks) is upgraded from association-only to a fully-ruled ACL. The external account stack defines an `aws_wafv2_web_acl` with:
+
+| Priority | Rule | Action |
+|---|---|---|
+| 1 | `AWSManagedRulesCommonRuleSet` | Managed (block on match) |
+| 2 | `AWSManagedRulesKnownBadInputsRuleSet` | Managed (block on match) |
+| 3 | `AWSManagedRulesSQLiRuleSet` | Managed (block on match) |
+| 4 | Rate-based: 2000 req / 5 min per IP | Block |
+
+Default action: `allow`. `visibility_config` enables CloudWatch metrics and sampled requests. WAF logging is delivered to a CloudWatch Log group `aws-waf-logs-odot-{stage}`.
+
+### E. Compliance Framework Alignment (Requirement 19)
+
+**Design Decision**: The `security` module adds a second `aws_securityhub_standards_subscription` for NIST 800-53 Rev 5 (`standards/nist-800-53/v/5.0.0`). A new doc `docs/compliance/nist-800-53-mapping.md` maps each control implemented by the platform (encryption, least-privilege IAM, network isolation, logging, etc.) to its NIST control family (AC, AU, SC, SI, CM, etc.), with an explicit "not applicable for POC" table and rationale.
+
+### F. Secrets Management (Requirement 20)
+
+**Design Decision**: The Okta client secret moves out of a plaintext tfvar. The `admin-dashboard` module reads it via a `data "aws_secretsmanager_secret_version"` lookup against a pre-created secret ARN (`var.okta_client_secret_arn`). The Cognito identity provider references the resolved value at apply time. Terraform state still contains the value (unavoidable for Cognito IdP config), but state is KMS-encrypted in S3 and the secret never lives in version control or tfvars. Task roles get `secretsmanager:GetSecretValue` scoped to the specific secret ARN only.
+
+### G. IaC Scanning and Policy as Code (Requirement 21)
+
+**Design Decision**: A new platform CI workflow `.github/workflows/platform-ci.yml` adds two gates on PRs to `odot-aws-platform`:
+- **tfsec** (or Checkov) static analysis — fails on HIGH/CRITICAL.
+- **OPA/Conftest** against `terraform show -json` plan output. Policies live in `policy/*.rego`:
+  - `tags.rego` — every resource has Environment/Project/Owner.
+  - `security_groups.rego` — no `0.0.0.0/0` ingress except external ALB SGs on 443.
+  - `encryption.rego` — all S3/DynamoDB/ECR/logs encrypted.
+
+A `scripts/policy-check.sh` wraps `terraform plan -out`, `terraform show -json`, and `conftest test`.
+
+### H. Tag Governance (Requirement 22)
+
+**Design Decision**: A management-account resource `aws_organizations_policy` of type `TAG_POLICY` enforces the three tags and constrains `Environment` to `dev|test|prod`. Attached to the `ODOT-Web` OU via `aws_organizations_policy_attachment`. This is defined in a new `stacks/management` configuration (the management account was previously implicit).
+
+### I. Resilience Validation (Requirement 23)
+
+**Design Decision**: A new `modules/resilience` provisions AWS FIS experiment templates:
+- `fis-stop-tasks-single-az` — uses the `aws:ecs:stop-task` action targeting tasks in one AZ, 50% selection.
+- `fis-bad-deployment` — registers a deliberately-failing task definition and asserts the circuit breaker rolls back.
+
+Stop conditions are wired to a CloudWatch alarm (halt the experiment if availability drops below a floor). Experiments are documented in the runbook with expected recovery (< 5 min to restore desired count).
+
+### J. Application Scaling Model (Requirement 24)
+
+**Design Decision (committed)**: **Shared ALB with host-based routing** is the chosen model for scale. Rationale: ALB-per-app hits the regional ALB quota (default ~50) and per-ALB cost (~$16+/mo each) long before "hundreds of apps." A shared ALB per account-stage uses host-header listener rules (`{app}.{stage}.odot...`) routing to per-app target groups.
+
+| Resource | Default Quota | Limit Per Shared ALB |
+|---|---|---|
+| Listener rules per ALB | 100 | ~100 apps (1 rule each) |
+| Target groups per ALB | 100 | ~100 apps |
+| ALBs per region | 50 | scale-out unit |
+
+Capacity: ~100 apps per shared ALB; beyond that, add a second shared ALB (sharding by app-name hash). Documented in README capacity-planning section. The `app-service` module gains a `shared_alb_listener_arn` input; when set, it creates a listener rule + target group instead of a dedicated ALB.
+
+### K. Synthetic Monitoring and SLOs (Requirement 25)
+
+**Design Decision**: The `monitoring` module adds `aws_synthetics_canary` per app endpoint (default 5-min schedule, heartbeat blueprint) writing artifacts to S3. A canary failure alarm routes to the existing SNS path. SLO tracking uses a CloudWatch metric math expression (successful requests / total) over 30 days; the dashboard detail page surfaces attainment and remaining error budget. Default Prod SLO: 99.9%.
+
+### L. Distributed Tracing (Requirement 26)
+
+**Design Decision**: The `app-service` task definition optionally appends an ADOT collector sidecar (`public.ecr.aws/aws-observability/aws-otel-collector`) when `enable_tracing = true`. The task role gains `xray:PutTraceSegments` and `xray:PutTelemetryRecords`. The app-template documents the OTEL env vars and SDK wiring per runtime.
+
+### M. Real-Time Dashboard Updates (Requirement 27)
+
+**Design Decision**: The dashboard backend adds a `/api/stream` SSE endpoint. A server-side poller (or EventBridge → backend webhook) detects status changes and pushes `status-change` events to subscribed clients. The frontend `useApps` hook subscribes to SSE and falls back to 30s polling on disconnect, showing a "reconnecting" badge. SSE is chosen over WebSockets because traffic is server→client only and SSE works cleanly through the ALB.
+
+### N. Tamper-Evident Audit Trail (Requirement 28)
+
+**Design Decision**: A new `aws_s3_bucket` `odot-dashboard-audit-archive-{stage}` with `object_lock_enabled = true` and a default retention of 365 days in `COMPLIANCE` mode. An EventBridge-scheduled (daily) Lambda or ECS task exports new DynamoDB audit items to this bucket as newline-delimited JSON. No principal — including Admin — is granted `s3:DeleteObject` or overwrite before retention expiry. This makes the audit trail provably immutable.
+
+### Enhancement Properties (P16–P24)
+
+| Property | Test File | Statement |
+|---|---|---|
+| P16 | `vpc_endpoints_test.go` | Internal VPCs contain all 7 required interface endpoints + 1 S3 gateway endpoint; external VPCs contain none. |
+| P17 | `tls_listener_test.go` | Every ALB has an HTTPS:443 listener with a TLS1.2+ policy and an HTTP:80 listener that redirects 301 to HTTPS. |
+| P18 | `alb_access_logs_test.go` | Every ALB has access_logs enabled pointing to an encrypted, public-access-blocked bucket. |
+| P19 | `waf_rules_test.go` | Every external WAF ACL contains the 3 managed rule groups + a rate-based rule, default action allow. |
+| P20 | `securityhub_nist_test.go` | Security module subscribes to both FSBP and NIST 800-53 standards. |
+| P21 | `okta_secret_test.go` | The admin-dashboard module sources the Okta secret from Secrets Manager, never a plaintext variable default. |
+| P22 | `tag_policy_test.go` | The management config defines a TAG_POLICY requiring the 3 tags with Environment ∈ {dev,test,prod}. |
+| P23 | `canary_test.go` | Every app has a Synthetics canary with an associated failure alarm routed to SNS. |
+| P24 | `audit_archive_test.go` | The audit archive bucket has Object Lock in COMPLIANCE mode with ≥365-day retention and no delete permission. |
+
+All enhancement property tests follow the same HCL-parsing approach (no AWS credentials) used by P1–P15, tagged `// Feature: odot-aws-web-hosting, Property {N}`.

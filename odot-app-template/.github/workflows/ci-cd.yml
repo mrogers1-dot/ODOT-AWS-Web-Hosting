@@ -1,0 +1,284 @@
+# odot-app-template CI/CD Pipeline
+# Full build, scan, and deploy workflow for ODOT web applications.
+# Triggers on pushes to dev, test, and prod branches.
+#
+# Requirements: 6.1, 6.2, 6.3, 6.4, 6.5, 6.6, 6.7, 6.8
+# See design document §7 for full specification.
+#
+# Authentication: OIDC federation (no long-lived AWS credentials).
+# Scanner gate: Trivy (CRITICAL/HIGH fail), Inspector (SBOM + scanner-gate),
+#               CodeQL (github/codeql-action/analyze).
+# Deploy: ECS rolling deployment via aws ecs update-service --force-new-deployment.
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - prod
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Stage 1: Unit Tests
+  # Halts the entire pipeline on failure (Requirement 6.2).
+  # ---------------------------------------------------------------------------
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Stage 2: Security Scanning
+  # Trivy + Amazon Inspector + CodeQL (Requirement 6.3, 6.4).
+  # Fails on any CRITICAL or HIGH severity finding.
+  # ---------------------------------------------------------------------------
+  scan:
+    name: Security Scan
+    needs: unit-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # -- Trivy container image scan --
+      - name: Build image for scanning
+        run: docker build -t scan-target:${{ github.sha }} .
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'scan-target:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy'
+
+      # -- Amazon Inspector scan --
+      - name: Run Amazon Inspector scan
+        uses: aws-actions/amazon-inspector-scan@v1
+        id: inspector
+        with:
+          artifact_type: 'container'
+          artifact_path: 'scan-target:${{ github.sha }}'
+          output_sbom_path: 'inspector-sbom.json'
+          output_inspector_scan_path: 'inspector-scan.json'
+
+      - name: Evaluate Inspector findings with scanner-gate
+        run: |
+          # Parse Inspector scan output and fail on CRITICAL/HIGH findings
+          if [ -f inspector-scan.json ]; then
+            CRITICAL_HIGH=$(jq '[.vulnerabilities[]? | select(.ratings[]?.severity == "critical" or .ratings[]?.severity == "high")] | length' inspector-scan.json 2>/dev/null || echo "0")
+            if [ "$CRITICAL_HIGH" -gt 0 ]; then
+              echo "::error::Inspector found $CRITICAL_HIGH CRITICAL/HIGH vulnerabilities"
+              jq '.vulnerabilities[] | select(.ratings[]?.severity == "critical" or .ratings[]?.severity == "high") | {id, ratings}' inspector-scan.json
+              exit 1
+            fi
+            echo "Inspector scan passed — no CRITICAL/HIGH findings"
+          else
+            echo "::warning::Inspector scan output not found, skipping gate check"
+          fi
+
+      # -- CodeQL analysis --
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: 'codeql'
+
+  # ---------------------------------------------------------------------------
+  # Stage 3: Build & Push to ECR
+  # Tags image with {SHA} and {branch}-latest (Requirement 6.5).
+  # Uses OIDC for AWS authentication (Requirement 6.7).
+  # ---------------------------------------------------------------------------
+  build-push:
+    name: Build & Push Image
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image-tag-sha: ${{ steps.generate-tags.outputs.tag_sha }}
+      image-tag-latest: ${{ steps.generate-tags.outputs.tag_latest }}
+      ecr-image: ${{ steps.generate-tags.outputs.ecr_image }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Generate image tags
+        id: generate-tags
+        run: |
+          BRANCH="${{ github.ref_name }}"
+          SHA="${{ github.sha }}"
+          ECR_REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          ECR_REPOSITORY="${{ vars.ECR_REPOSITORY_NAME }}"
+
+          TAG_SHA="${SHA}"
+          TAG_LATEST="${BRANCH}-latest"
+
+          echo "tag_sha=${TAG_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag_latest=${TAG_LATEST}" >> "$GITHUB_OUTPUT"
+          echo "ecr_image=${ECR_REGISTRY}/${ECR_REPOSITORY}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ steps.generate-tags.outputs.ecr_image }}:${{ steps.generate-tags.outputs.tag_sha }} \
+            -t ${{ steps.generate-tags.outputs.ecr_image }}:${{ steps.generate-tags.outputs.tag_latest }} \
+            .
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ steps.generate-tags.outputs.ecr_image }}:${{ steps.generate-tags.outputs.tag_sha }}
+          docker push ${{ steps.generate-tags.outputs.ecr_image }}:${{ steps.generate-tags.outputs.tag_latest }}
+
+  # ---------------------------------------------------------------------------
+  # Stage 4a: Deploy to Dev
+  # Branch-conditional: runs only on dev branch (Requirement 6.6).
+  # Uses ECS rolling deployment with --force-new-deployment.
+  # ---------------------------------------------------------------------------
+  deploy-dev:
+    name: Deploy to Dev
+    needs: build-push
+    if: github.ref_name == 'dev'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to ECS (Dev)
+        run: |
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --service ${{ vars.ECS_SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for deployment stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --services ${{ vars.ECS_SERVICE_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+  # ---------------------------------------------------------------------------
+  # Stage 4b: Deploy to Test
+  # Branch-conditional: runs only on test branch (Requirement 6.6).
+  # Uses ECS rolling deployment with --force-new-deployment.
+  # ---------------------------------------------------------------------------
+  deploy-test:
+    name: Deploy to Test
+    needs: build-push
+    if: github.ref_name == 'test'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to ECS (Test)
+        run: |
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --service ${{ vars.ECS_SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for deployment stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --services ${{ vars.ECS_SERVICE_NAME }} \
+            --region ${{ env.AWS_REGION }}
+
+  # ---------------------------------------------------------------------------
+  # Stage 4c: Deploy to Prod
+  # Branch-conditional: runs only on prod branch (Requirement 6.6, 6.8).
+  # Requires manual approval via GitHub Environment protection rules.
+  # Uses ECS rolling deployment with --force-new-deployment.
+  # ---------------------------------------------------------------------------
+  deploy-prod:
+    name: Deploy to Prod
+    needs: build-push
+    if: github.ref_name == 'prod'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to ECS (Prod)
+        run: |
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --service ${{ vars.ECS_SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for deployment stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --services ${{ vars.ECS_SERVICE_NAME }} \
+            --region ${{ env.AWS_REGION }}

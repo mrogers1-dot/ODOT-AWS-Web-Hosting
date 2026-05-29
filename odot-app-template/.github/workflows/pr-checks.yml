@@ -1,0 +1,106 @@
+# odot-app-template PR Checks
+# Runs lint and unit tests on every pull request to validate code quality
+# before merge.
+#
+# Requirements: 7.2
+
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - test
+      - prod
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up runtime
+        run: |
+          echo "Detecting project runtime..."
+          # Auto-detect runtime from Dockerfile or project files
+          if [ -f "package.json" ]; then
+            echo "NODE_PROJECT=true" >> $GITHUB_ENV
+          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+            echo "PYTHON_PROJECT=true" >> $GITHUB_ENV
+          elif [ -f "*.csproj" ] || [ -f "*.sln" ]; then
+            echo "DOTNET_PROJECT=true" >> $GITHUB_ENV
+          fi
+
+      - name: Run linter
+        run: |
+          if [ "$NODE_PROJECT" = "true" ]; then
+            npm ci
+            npm run lint
+          elif [ "$PYTHON_PROJECT" = "true" ]; then
+            pip install ruff
+            ruff check .
+          elif [ "$DOTNET_PROJECT" = "true" ]; then
+            dotnet format --verify-no-changes
+          else
+            echo "No linter configured — add lint step for your runtime"
+          fi
+
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up runtime
+        run: |
+          echo "Detecting project runtime..."
+          if [ -f "package.json" ]; then
+            echo "NODE_PROJECT=true" >> $GITHUB_ENV
+          elif [ -f "requirements.txt" ] || [ -f "pyproject.toml" ]; then
+            echo "PYTHON_PROJECT=true" >> $GITHUB_ENV
+          elif [ -f "*.csproj" ] || [ -f "*.sln" ]; then
+            echo "DOTNET_PROJECT=true" >> $GITHUB_ENV
+          fi
+
+      - name: Run unit tests
+        run: |
+          if [ "$NODE_PROJECT" = "true" ]; then
+            npm ci
+            npm test
+          elif [ "$PYTHON_PROJECT" = "true" ]; then
+            pip install -r requirements.txt
+            pytest
+          elif [ "$DOTNET_PROJECT" = "true" ]; then
+            dotnet test
+          else
+            echo "No test runner configured — add test step for your runtime"
+          fi
+
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.5"
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Terraform Init
+        run: terraform init -backend=false
+        working-directory: terraform
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: terraform

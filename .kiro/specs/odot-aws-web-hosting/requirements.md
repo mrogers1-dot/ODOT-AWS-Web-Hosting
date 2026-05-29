@@ -39,6 +39,10 @@ The POC begins with one application and is designed to scale to hundreds of appl
 - **GuardDuty**: AWS GuardDuty providing continuous threat detection across accounts.
 - **Macie**: AWS Macie providing sensitive data discovery and classification for S3 buckets.
 - **Config**: AWS Config providing continuous compliance evaluation of resource configurations.
+- **Admin_Dashboard**: The hosted React/Node.js web application providing real-time operational visibility and administrative actions across all platform applications, hosted in the Internal_Account.
+- **Cognito_User_Pool**: An Amazon Cognito User Pool federated with Okta that provides authentication and role-based authorization for the Admin_Dashboard.
+- **Audit_Table**: A DynamoDB table (`odot-dashboard-audit`) recording all administrative actions performed via the Admin_Dashboard, including user identity, timestamp, action type, and outcome.
+- **Maintenance_Mode**: An ALB listener rule configuration that returns a static HTTP 503 maintenance page, toggled via the Admin_Dashboard.
 
 ---
 
@@ -239,3 +243,272 @@ The POC begins with one application and is designed to scale to hundreds of appl
 2. WHEN Week 2 is complete, THE Platform SHALL have both AWS accounts provisioned under AWS Organizations with all six VPCs, six ECS_Clusters, ALBs, WAF associations, and SCPs applied.
 3. WHEN Week 3 is complete, THE Platform SHALL have the first POC application deployed end-to-end through the Pipeline to all three Stages in both accounts, with the App_Template self-service flow validated.
 4. WHEN Week 4 is complete, THE Platform SHALL have all CloudWatch dashboards, alarms, Slack Notification_Channels, email routing, and documentation finalized, with a live demo environment ready for senior leadership review.
+
+---
+
+### Requirement 14: Admin Operations Dashboard
+
+**User Story:** As an ODOT operations team member, I want a hosted web dashboard showing real-time status of all applications across both accounts with drill-down metrics, administrative actions, and manual restart capabilities, so that I can monitor platform health and take corrective action without using the AWS console.
+
+#### Acceptance Criteria
+
+##### Authentication & Authorization
+
+1. THE Admin_Dashboard SHALL authenticate users via Okta (OIDC) federated through a Cognito_User_Pool.
+2. THE Admin_Dashboard SHALL enforce two roles mapped from Okta groups: `Developer` (view all, mutating actions on Dev/Test only) and `Admin` (view all, mutating actions on all stages including Prod).
+3. WHEN a user without the `Admin` role attempts any mutating action on a Prod service, THE Admin_Dashboard SHALL deny the action and display an "insufficient permissions" message.
+4. THE Platform SHALL include documentation covering: Okta App Integration setup (OIDC, authorization code flow), Okta group configuration and user assignment, Cognito federation mapping, and ongoing user/role management procedures.
+
+##### Hosting & Access
+
+5. THE Admin_Dashboard SHALL be hosted as a containerized application (React + Tailwind CSS frontend, Node.js/Express backend API) on ECS Fargate in the Internal_Account, accessible only via Client VPN or Direct Connect.
+6. THE Admin_Dashboard SHALL be deployed via the same `app-service` Terraform module and CI/CD Pipeline as other platform applications.
+
+##### Overview Page
+
+7. THE Admin_Dashboard SHALL display a tabbed interface with "Internal" and "External" tabs, each showing a card grid of all applications hosted in that account.
+8. EACH application card SHALL display: application name, color-coded status indicator (green=healthy, yellow=degraded, red=down), task health summary (running/desired across stages), and a mini sparkline showing the last 1 hour of health.
+9. THE Admin_Dashboard SHALL determine application status as: Healthy (all alarms OK, tasks ≥ desired), Degraded (any warning-level alarm or tasks < desired but > 0), Down (any critical alarm or 0 running tasks).
+10. THE Admin_Dashboard SHALL poll for updated status every 30 seconds and display a "last updated" timestamp.
+
+##### Detail Page
+
+11. WHEN a user clicks an application card, THE Admin_Dashboard SHALL navigate to a detail page with sub-tabs for Dev, Test, and Prod stages.
+12. THE Detail page SHALL display site metrics: requests per minute, response time (p50, p95, p99), 5xx error rate, 4xx error rate, and active connections — sourced from CloudWatch and ALB metrics.
+13. THE Detail page SHALL display app health metrics: running task count vs desired, CPU utilization, memory utilization, last deployment timestamp, task restart count (last 24h), and container image tag.
+14. THE Detail page SHALL display user stats: unique source IPs (24h), peak traffic hour, and top request paths — sourced from ALB access logs. (Phase 2: CloudWatch RUM for real user metrics.)
+15. THE Detail page SHALL render time-series graphs for request count, latency, CPU/memory utilization, and traffic patterns.
+
+##### Administrative Actions — Service Lifecycle
+
+16. THE Admin_Dashboard SHALL provide the following service lifecycle actions per application per stage: Restart (force new deployment), Stop (set desired count to 0), Start (restore desired count to minimum), Scale Up (increase desired count by N), and Scale Down (decrease desired count by N, floor at minimum).
+17. WHEN a user clicks any mutating action button, THE Admin_Dashboard SHALL display a confirmation dialog: "Are you sure you want to {action} {app_name} in {stage}?"
+18. THE Admin_Dashboard SHALL log every administrative action to the Audit_Table recording: timestamp, user identity (from Okta/Cognito), application name, stage, action type, parameters, and outcome (success/failure).
+19. WHEN any administrative action is executed, THE Admin_Dashboard SHALL publish a notification to the appropriate Slack Notification_Channel: "{user} performed {action} on {app_name} ({stage}) at {timestamp}".
+
+##### Administrative Actions — Diagnostics
+
+20. THE Admin_Dashboard SHALL provide: View Recent Logs (last N lines from CloudWatch Logs), Search Logs (CloudWatch Logs Insights query interface), View Running Tasks (list all tasks with IPs, start time, health status), Stop Specific Task (kill one task — ECS auto-replaces), and Health Check Status (ALB target health per task).
+21. THE Admin_Dashboard SHALL provide a View Deployment History panel showing the last 10 deployments with image tag, timestamp, and deployment status.
+
+##### Administrative Actions — Deployment
+
+22. THE Admin_Dashboard SHALL provide a Rollback to Previous Version action that updates the ECS service to use the previous task definition revision.
+23. THE Admin_Dashboard SHALL provide a View Available Images panel listing all tagged images in the ECR_Repository with their scan status (clean/vulnerable).
+
+##### Administrative Actions — Traffic & Networking
+
+24. THE Admin_Dashboard SHALL provide an Enable/Disable Maintenance_Mode toggle that configures the ALB listener rule to return a static maintenance page (HTTP 503 with custom HTML body).
+25. THE Admin_Dashboard SHALL provide Block IP and Unblock IP actions for External_Account applications that add/remove IP addresses from the WAF IP set.
+
+##### Administrative Actions — Auto-Scaling
+
+26. THE Admin_Dashboard SHALL provide: View Scaling Activity (recent scale events), Temporarily Disable Auto-Scaling (set min=max=current), Re-enable Auto-Scaling (restore original bounds), and Override Min/Max Tasks (temporarily change scaling bounds).
+
+##### Administrative Actions — Configuration
+
+27. THE Admin_Dashboard SHALL provide a View Environment Variables panel showing current task definition environment variables with secret values masked.
+
+##### Role-Based Access Control for Actions
+
+28. THE Admin_Dashboard SHALL enforce: Developers may perform all read-only actions and all mutating actions on Dev and Test stages only. Admins may perform all actions on all stages. Rollback and Block/Unblock IP actions SHALL require the Admin role regardless of stage.
+
+##### Cross-Account Data Access
+
+29. THE Admin_Dashboard's ECS task role SHALL assume a read-only role in the External_Account for querying CloudWatch metrics, ECS service status, and ALB target health.
+30. THE Admin_Dashboard's ECS task role SHALL have permission to call mutating ECS, ALB, WAF, and Application Auto Scaling APIs in both accounts, scoped to the specific platform resources.
+
+##### Documentation
+
+31. THE Platform SHALL update `DEPLOYMENT-PREREQUISITES.md` with a new section covering Admin Dashboard setup: Okta configuration, Cognito setup, cross-account IAM roles, DynamoDB audit table, and verification steps.
+32. THE Platform SHALL update the `odot-aws-platform` README with the Admin Dashboard module reference, updated repository structure, and architecture description.
+33. THE Platform SHALL update `docs/runbook.md` with Admin Dashboard operations: user management, auth troubleshooting, audit log review, and dashboard maintenance.
+34. THE Platform SHALL include a new architecture diagram (`docs/architecture/admin-dashboard.md`) showing the Okta → Cognito → Dashboard → AWS API data flow.
+35. THE Admin_Dashboard repository SHALL include documentation for: Okta setup (`docs/okta-setup.md`), Cognito setup (`docs/cognito-setup.md`), role management (`docs/role-management.md`), and an admin actions reference (`docs/admin-actions-reference.md`).
+
+---
+
+### Requirement 15: Private Connectivity via VPC Endpoints (Internal Account)
+
+**User Story:** As an ODOT network engineer, I want internal-account Fargate tasks to reach required AWS services without any internet egress, so that workloads remain fully private while still being able to pull images, write logs, and read secrets.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL provision the following VPC interface endpoints in every Internal_Account VPC: `com.amazonaws.{region}.ecr.api`, `com.amazonaws.{region}.ecr.dkr`, `com.amazonaws.{region}.logs`, `com.amazonaws.{region}.secretsmanager`, `com.amazonaws.{region}.ssm`, `com.amazonaws.{region}.ssmmessages`, and `com.amazonaws.{region}.sts`.
+2. THE Platform SHALL provision a `com.amazonaws.{region}.s3` Gateway endpoint in every Internal_Account VPC and associate it with all private route tables (required for ECR image layer retrieval).
+3. THE Platform SHALL NOT provision a NAT gateway or internet gateway in any Internal_Account VPC.
+4. THE Platform SHALL attach a security group to all interface endpoints that allows inbound HTTPS (443) only from the VPC CIDR block.
+5. THE Platform SHALL enable `private_dns_enabled = true` on all interface endpoints so that AWS service DNS names resolve to the endpoint ENIs.
+6. WHEN an Internal_Account Fargate task launches, THE Platform SHALL allow the task to pull its image from ECR and write logs to CloudWatch using only the VPC endpoints, with no traffic traversing a public route.
+7. THE Platform SHALL provision interface endpoints across the same minimum of two Availability Zones used by the VPC private subnets.
+
+---
+
+### Requirement 16: TLS Termination and DNS
+
+**User Story:** As an ODOT security officer, I want all application traffic encrypted in transit with valid certificates and DNS records, so that no ODOT web application ever serves plaintext HTTP to a user.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL provision an ACM certificate for each application's fully qualified domain name.
+2. THE Platform SHALL configure an HTTPS listener on port 443 for every ALB, using the ACM certificate and a modern TLS security policy (minimum `ELBSecurityPolicy-TLS13-1-2-2021-06`).
+3. THE Platform SHALL configure an HTTP listener on port 80 for every ALB that issues a permanent redirect (HTTP 301) to the HTTPS listener.
+4. THE Platform SHALL create a Route 53 alias record pointing the application's domain name to its ALB.
+5. WHEN a client connects to an ALB over HTTP, THE Platform SHALL redirect the client to the equivalent HTTPS URL before forwarding any request to a Fargate_Task.
+6. THE Platform SHALL forward traffic from the ALB to Fargate_Tasks on the container port over the VPC-internal network only.
+
+---
+
+### Requirement 17: ALB Access Logging
+
+**User Story:** As an ODOT operations team member, I want every ALB to record access logs to S3, so that the Admin_Dashboard and security tooling can analyze traffic patterns and source IPs.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL enable access logging on every ALB, delivering logs to a dedicated S3 bucket.
+2. THE Platform SHALL encrypt the ALB access log S3 bucket and block all public access.
+3. THE Platform SHALL configure an S3 lifecycle policy that transitions ALB access logs to infrequent-access storage after 30 days and expires them after 365 days.
+4. THE Platform SHALL grant the regional ELB service account and the log delivery service permission to write to the access log bucket via a bucket policy.
+5. WHEN the Admin_Dashboard requests user statistics (Requirement 14.14), THE Admin_Dashboard SHALL source unique source IPs, peak traffic hour, and top request paths from the ALB access logs.
+
+---
+
+### Requirement 18: WAF Managed Rule Protection
+
+**User Story:** As an ODOT security officer, I want every external WAF Web ACL to enforce managed rule groups and rate limiting, so that public applications are protected against common attacks and volumetric abuse — not merely "associated" with an empty firewall.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL configure every External_Account WAF Web ACL with the AWS Managed Rule group `AWSManagedRulesCommonRuleSet`.
+2. THE Platform SHALL configure every External_Account WAF Web ACL with the AWS Managed Rule group `AWSManagedRulesKnownBadInputsRuleSet`.
+3. THE Platform SHALL configure every External_Account WAF Web ACL with the AWS Managed Rule group `AWSManagedRulesSQLiRuleSet`.
+4. THE Platform SHALL configure a rate-based rule on every External_Account WAF Web ACL that blocks a source IP exceeding 2,000 requests in any 5-minute window.
+5. THE Platform SHALL enable WAF logging to CloudWatch Logs for every Web ACL.
+6. THE Platform SHALL set the default action of every WAF Web ACL to `allow`, so that only requests matching block rules are rejected.
+
+---
+
+### Requirement 19: Compliance Framework Alignment
+
+**User Story:** As an ODOT security officer, I want the platform's security posture mapped to a recognized control framework, so that the environment is audit-ready for state-government compliance review.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL enable the `NIST Special Publication 800-53 Revision 5` standard in Security_Hub in both accounts, in addition to the AWS Foundational Security Best Practices standard.
+2. THE Platform SHALL include a compliance mapping document that maps each implemented security control to its corresponding NIST 800-53 control family.
+3. THE Platform SHALL document, for each Security_Hub control that is intentionally not applicable to the POC, the rationale for its exclusion.
+
+---
+
+### Requirement 20: Secrets Management
+
+**User Story:** As an ODOT security officer, I want all third-party credentials stored in a managed secrets store rather than in Terraform state or variables, so that no secret material is exposed in version control or plan output.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL store the Okta OIDC client secret in AWS Secrets Manager, encrypted with a KMS_Key.
+2. THE admin-dashboard Terraform_Module SHALL read the Okta client secret from Secrets Manager at apply time rather than accepting it as a plaintext variable value committed to version control.
+3. THE Platform SHALL grant the Cognito and Admin_Dashboard task roles read access to only the specific secret ARNs they require.
+4. THE Platform SHALL NOT write any secret value to Terraform state in plaintext.
+
+---
+
+### Requirement 21: Infrastructure Code Scanning and Policy as Code
+
+**User Story:** As an ODOT security officer, I want the platform's own Terraform scanned and policy-checked in CI before apply, so that the infrastructure that enforces our guardrails is itself verified secure.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL run a static analysis scanner (tfsec or Checkov) against all Terraform_Modules in the `odot-aws-platform` CI pipeline on every pull request.
+2. IF the static analysis scanner detects a HIGH or CRITICAL severity misconfiguration, THEN THE Platform SHALL fail the pull request check and block merge.
+3. THE Platform SHALL run a policy-as-code evaluation (OPA/Conftest) against the rendered `terraform plan` output that asserts platform invariants: all resources are tagged, no security group allows `0.0.0.0/0` ingress except external ALBs on 443, and all storage is encrypted.
+4. WHEN a policy-as-code assertion fails, THE Platform SHALL block the pull request and report which policy was violated.
+
+---
+
+### Requirement 22: Tag Governance
+
+**User Story:** As an ODOT infrastructure administrator, I want untagged resources prevented at the organization level, so that cost allocation and ownership are guaranteed rather than merely encouraged.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL define an AWS Organizations Tag Policy that requires the `Environment`, `Project`, and `Owner` tags on all taggable resource types.
+2. THE Platform SHALL attach the Tag Policy to the organizational unit containing the Internal_Account and External_Account.
+3. THE Platform SHALL define the allowed values for the `Environment` tag as exactly `dev`, `test`, and `prod`.
+
+---
+
+### Requirement 23: Resilience Validation
+
+**User Story:** As an ODOT operations team member, I want automated fault-injection experiments that prove the platform recovers from failures, so that high-availability claims are backed by evidence rather than assumption.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL define an AWS Fault Injection Simulator experiment template that stops a percentage of a service's Fargate_Tasks in a single Availability Zone.
+2. WHEN the fault-injection experiment runs against a service with the minimum 2 tasks, THE Platform SHALL restore the desired task count within 5 minutes without manual intervention.
+3. THE Platform SHALL define a fault-injection experiment that simulates a failed deployment and asserts the ECS deployment circuit breaker rolls back to the last healthy task definition.
+4. THE Platform SHALL document the fault-injection experiments and their expected recovery behavior in the runbook.
+
+---
+
+### Requirement 24: Application Scaling Model
+
+**User Story:** As an ODOT infrastructure administrator, I want a documented, tested model for hosting hundreds of applications, so that the platform scales without hitting account limits or unbounded cost.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL document the load-balancer scaling model, explicitly choosing between shared-ALB-with-host-routing and ALB-per-application, with the rationale and tradeoffs stated.
+2. THE Platform SHALL document the relevant AWS Service Quotas (ALBs per region, target groups per ALB, listener rules per ALB, ECS services per cluster) and the threshold at which a quota increase must be requested.
+3. THE Platform SHALL provide a capacity-planning calculation showing the theoretical maximum number of applications supportable under the chosen model before any quota increase is required.
+
+---
+
+### Requirement 25: Synthetic Monitoring and Service Level Objectives
+
+**User Story:** As an ODOT operations team member, I want synthetic canaries and defined SLOs for each application, so that availability problems are detected proactively before users report them.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL provision a CloudWatch Synthetics canary for each application endpoint that issues a request at a configurable interval (default 5 minutes).
+2. WHEN a canary detects a non-2xx/3xx response or a timeout, THE Platform SHALL transition a canary alarm to ALARM and notify the appropriate Notification_Channel.
+3. THE Platform SHALL define a default Service Level Objective of 99.9% successful requests measured over a rolling 30-day window for Prod applications.
+4. THE Platform SHALL surface the SLO attainment and remaining error budget on the Admin_Dashboard detail page.
+
+---
+
+### Requirement 26: Distributed Tracing
+
+**User Story:** As an ODOT developer, I want request-level distributed tracing across services, so that performance bottlenecks can be isolated to a specific service or dependency.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL provide an AWS Distro for OpenTelemetry (ADOT) sidecar container definition that application task definitions can include.
+2. THE Platform SHALL configure the ADOT sidecar to export traces to AWS X-Ray.
+3. THE Platform SHALL grant Fargate_Tasks the IAM permissions required to write trace segments to X-Ray.
+4. THE App_Template SHALL document how a developer enables tracing for their application.
+
+---
+
+### Requirement 27: Real-Time Dashboard Updates
+
+**User Story:** As an ODOT operations team member, I want the Admin_Dashboard to update in real time rather than on a fixed poll interval, so that I see status changes the moment they happen during an incident.
+
+#### Acceptance Criteria
+
+1. THE Admin_Dashboard SHALL push status updates to connected clients using Server-Sent Events (SSE) or WebSockets rather than relying solely on 30-second polling.
+2. WHEN an application's status changes (healthy/degraded/down), THE Admin_Dashboard SHALL deliver the updated status to connected clients within 10 seconds of the change.
+3. IF the real-time channel disconnects, THEN THE Admin_Dashboard SHALL fall back to 30-second polling and display a "reconnecting" indicator.
+4. THE Admin_Dashboard SHALL continue to display the "last updated" timestamp reflecting the most recent successful update.
+
+---
+
+### Requirement 28: Tamper-Evident Audit Trail
+
+**User Story:** As an ODOT security officer, I want the Admin_Dashboard audit trail exported to immutable storage, so that the record of who did what cannot be altered or deleted, even by an administrator.
+
+#### Acceptance Criteria
+
+1. THE Platform SHALL export Audit_Table records to an S3 bucket configured with Object Lock in compliance mode.
+2. THE Platform SHALL set a retention period of a minimum of 365 days on the Object Lock configuration of the audit export bucket.
+3. THE Platform SHALL run the audit export on a scheduled basis (minimum daily) via an EventBridge-scheduled task.
+4. THE Platform SHALL NOT grant any IAM principal permission to delete or overwrite objects in the audit export bucket before the Object Lock retention period expires.

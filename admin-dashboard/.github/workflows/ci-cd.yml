@@ -1,0 +1,103 @@
+# Admin Dashboard CI/CD Pipeline
+# Same pattern as odot-app-template: unit test → scan → build → deploy.
+# Deploys to Internal_Account only.
+#
+# Requirements: 14.6
+
+name: Dashboard CI/CD
+
+on:
+  push:
+    branches:
+      - dev
+      - test
+      - prod
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  unit-test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci
+      - run: npm test
+
+  scan:
+    name: Security Scan
+    needs: unit-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image for scanning
+        run: docker build -t dashboard-scan:${{ github.sha }} .
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'dashboard-scan:${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  build-push:
+    name: Build & Push
+    needs: scan
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+      - name: Build and push
+        run: |
+          IMAGE="${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY_NAME }}"
+          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:${{ github.ref_name }}-latest .
+          docker push ${IMAGE}:${{ github.sha }}
+          docker push ${IMAGE}:${{ github.ref_name }}-latest
+
+  deploy:
+    name: Deploy to Internal
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'prod' && 'production' || github.ref_name }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --service ${{ vars.ECS_SERVICE_NAME }} \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+      - name: Wait for stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ vars.ECS_CLUSTER_NAME }} \
+            --services ${{ vars.ECS_SERVICE_NAME }} \
+            --region ${{ env.AWS_REGION }}

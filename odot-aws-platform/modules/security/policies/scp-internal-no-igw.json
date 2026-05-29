@@ -1,0 +1,25 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyCreateInternetGateway",
+      "Effect": "Deny",
+      "Action": [
+        "ec2:CreateInternetGateway",
+        "ec2:AttachInternetGateway"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DenyInternetFacingALB",
+      "Effect": "Deny",
+      "Action": "elasticloadbalancing:CreateLoadBalancer",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "elasticloadbalancing:Scheme": "internet-facing"
+        }
+      }
+    }
+  ]
+}

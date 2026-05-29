@@ -1,0 +1,91 @@
+# terraform.tfvars.example
+#
+# Copy this file to terraform.tfvars and fill in the values for your application.
+# Required variables are marked with (REQUIRED). Optional variables show defaults.
+#
+# After setting values, run:
+#   terraform init
+#   terraform plan
+#   terraform apply
+#
+# Requirements: 7.3, 7.6
+
+# =============================================================================
+# APPLICATION CONFIGURATION — Set these for your application
+# =============================================================================
+
+# (REQUIRED) Unique name for your application. Lowercase, alphanumeric, hyphens only.
+# Used in ECR repo names, log groups, IAM roles, and all resource naming.
+# Example: "my-web-app", "odot-portal", "fleet-tracker"
+app_name = "my-app"
+
+# Container runtime platform.
+# Use "linux" for Node.js, Python, Java, Go, or .NET Core applications.
+# Use "windows" for .NET Framework / IIS applications (requires minimum 1024 CPU).
+# Default: "linux"
+runtime = "linux"
+
+# Port your application container listens on.
+# This is used for ALB health checks and ECS port mappings.
+# Default: 8080
+container_port = 8080
+
+# Fargate task CPU units. Valid values: 256, 512, 1024, 2048, 4096.
+# Windows containers require minimum 1024.
+# Default: 256
+cpu = 256
+
+# Fargate task memory in MiB. Must be valid for the chosen CPU.
+# CPU 256: 512, 1024, 2048
+# CPU 512: 1024–4096
+# CPU 1024: 2048–8192
+# CPU 2048: 4096–16384
+# CPU 4096: 8192–30720
+# Default: 512
+memory = 512
+
+# =============================================================================
+# INFRASTRUCTURE CONFIGURATION — Provided by the platform team
+# =============================================================================
+
+# AWS region. ODOT platform uses us-east-2 (Ohio).
+# Default: "us-east-2"
+aws_region = "us-east-2"
+
+# Account type: "internal" for corporate-only apps, "external" for public-facing.
+# (REQUIRED)
+account_type = "internal"
+
+# Deployment stage: "dev", "test", or "prod".
+# Controls log retention (90 days dev/test, 365 days prod) and capacity strategy.
+# (REQUIRED)
+stage = "dev"
+
+# (REQUIRED) VPC ID — get from platform team or Terraform remote state.
+vpc_id = "vpc-xxxxxxxxxxxxxxxxx"
+
+# (REQUIRED) Private subnet IDs for ECS tasks. Must span at least 2 AZs.
+private_subnet_ids = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-yyyyyyyyyyyyyyyyy"]
+
+# (REQUIRED) Subnet IDs for the ALB.
+# External account: use public subnets. Internal account: use private subnets.
+alb_subnet_ids = ["subnet-xxxxxxxxxxxxxxxxx", "subnet-yyyyyyyyyyyyyyyyy"]
+
+# (REQUIRED) ECS cluster ARN — get from platform team or Terraform remote state.
+cluster_arn = "arn:aws:ecs:us-east-2:123456789012:cluster/WebHosting-Dev"
+
+# (REQUIRED) ECS cluster name.
+cluster_name = "WebHosting-Dev"
+
+# (REQUIRED) KMS key ARN for encryption — get from platform team.
+kms_key_arn = "arn:aws:kms:us-east-2:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# WAF Web ACL ARN. Required for external account; leave empty for internal.
+# Default: ""
+waf_acl_arn = ""
+
+# (REQUIRED) SNS topic ARN for CloudWatch alarm notifications.
+sns_topic_arn = "arn:aws:sns:us-east-2:123456789012:odot-alerts-internal"
+
+# Owner tag for cost allocation. Default: "odot-platform-team"
+owner = "odot-platform-team"

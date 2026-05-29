@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyALBWithoutWAFTag",
+      "Effect": "Deny",
+      "Action": "elasticloadbalancing:CreateLoadBalancer",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "elasticloadbalancing:Scheme": "internet-facing"
+        },
+        "Null": {
+          "aws:RequestTag/waf-managed": "true"
+        }
+      }
+    }
+  ]
+}

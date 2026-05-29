@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Analyze Requirements",
+  "description": "When requirements.md is edited, analyze it for obvious omissions, ambiguous requirements, contradictions, security concerns, and non-EARS format issues. Ask the user one question at a time with ranked options, then update the file based on responses.",
+  "version": "1",
+  "when": {
+    "type": "fileEdited",
+    "patterns": [
+      "**/requirements.md"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "The requirements.md file has just been edited. Please analyze it for:\n\n1. Obvious omissions - missing requirements that should be included based on the context of this project\n2. Ambiguous requirements - requirements that need clarification or are unclear\n3. Contradictory requirements\n4. Security concerns - any requirement that might present a security issue\n5. Any requirements not in EARS format\n\nIf you find issues:\n- Ask the user ONE question at a time\n- Present specific options, from best to worst, with your recommendation for fixing the issue, along with a short explanation\n- Wait for their answer before asking the next question\n- After all questions are answered, update the requirements.md file with the clarifications and additions based on the user's responses\n\nIf no issues are found, inform the user that the requirements look complete and clear."
+  }
+}
