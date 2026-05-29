@@ -254,4 +254,4 @@ Full details in [DEPLOYMENT-PREREQUISITES.md § Application Onboarding](DEPLOYME
 
 ## License
 
-Internal use only — Ohio Department of Transportation
+Internal use only — Ohio Department of Transportation.
