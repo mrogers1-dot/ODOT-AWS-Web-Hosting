@@ -1,0 +1,16 @@
+name: Mirror to Work GitHub (mrogers1-dot)
+
+on:
+  push:
+    branches: [ '**' ]     # mirrors ALL branches
+  create:                   # new tags & branches
+  delete:                   # also mirror branch/tag deletions
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror repository to work account
+        run: |
+          git clone --bare "https://github.com/${{ github.repository }}.git" .
+          git push --mirror "https://x:${{ secrets.DESTINATION_REPO_TOKEN }}@github.com/mrogers1-dot/ODOT-AWS-Web-Hosting.git"
