@@ -4,13 +4,17 @@ on:
   push:
     branches: [ '**' ]     # mirrors ALL branches
   create:                   # new tags & branches
-  delete:                   # also mirror branch/tag deletions
+  delete:                   # also mirror deletions
 
 jobs:
   mirror:
     runs-on: ubuntu-latest
     steps:
-      - name: Mirror repository to work account
+      - name: Checkout source repository (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0      # gets ALL history, branches, tags
+
+      - name: Mirror to work account
         run: |
-          git clone --bare "https://github.com/${{ github.repository }}.git" .
           git push --mirror "https://x:${{ secrets.DESTINATION_REPO_TOKEN }}@github.com/mrogers1-dot/ODOT-AWS-Web-Hosting.git"
