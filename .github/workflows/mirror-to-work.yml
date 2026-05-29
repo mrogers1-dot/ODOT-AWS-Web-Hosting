@@ -2,9 +2,9 @@ name: Mirror to Work GitHub (mrogers1-dot)
 
 on:
   push:
-    branches: [ '**' ]     # mirrors ALL branches
-  create:                   # new tags & branches
-  delete:                   # also mirror deletions
+    branches: [ '**' ]
+  create:
+  delete:
 
 jobs:
   mirror:
@@ -13,8 +13,8 @@ jobs:
       - name: Checkout source repository (full history)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0      # gets ALL history, branches, tags
+          fetch-depth: 0
 
       - name: Mirror to work account
         run: |
-          git push --mirror "https://x:${{ secrets.DESTINATION_REPO_TOKEN }}@github.com/mrogers1-dot/ODOT-AWS-Web-Hosting.git"
+          git push --mirror "https://${{ secrets.DESTINATION_REPO_TOKEN }}@github.com/mrogers1-dot/ODOT-AWS-Web-Hosting.git"
