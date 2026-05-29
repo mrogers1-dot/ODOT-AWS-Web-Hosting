@@ -14,8 +14,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: false   # ← THIS STOPS THE BOT TOKEN
+          persist-credentials: false
 
       - name: Mirror to work account
         run: |
+          # Remove the mirror workflow file so it never appears in the work repo
+          rm -f .github/workflows/mirror-to-work.yml
+          
           git push --mirror "https://x-access-token:${{ secrets.DESTINATION_REPO_TOKEN }}@github.com/mrogers1-dot/ODOT-AWS-Web-Hosting.git"
