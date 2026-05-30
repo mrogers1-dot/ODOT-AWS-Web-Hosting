@@ -156,6 +156,7 @@ resource "aws_lb_target_group" "this" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lb_listener" "https" {
+  count             = var.certificate_arn != "" ? 1 : 0
   load_balancer_arn = aws_lb.this.arn
   port              = 443
   protocol          = "HTTPS"
@@ -171,12 +172,14 @@ resource "aws_lb_listener" "https" {
 }
 
 # -----------------------------------------------------------------------------
-# ALB Listener — HTTP (80) → HTTPS Redirect
-# All HTTP traffic is permanently redirected to HTTPS. No plaintext serving.
+# ALB Listener — HTTP (80)
+# When a certificate exists: redirects to HTTPS.
+# When no certificate: forwards directly to target group (dev/testing only).
 # Requirements: 16.3
 # -----------------------------------------------------------------------------
 
-resource "aws_lb_listener" "http" {
+resource "aws_lb_listener" "http_redirect" {
+  count             = var.certificate_arn != "" ? 1 : 0
   load_balancer_arn = aws_lb.this.arn
   port              = 80
   protocol          = "HTTP"
@@ -189,6 +192,20 @@ resource "aws_lb_listener" "http" {
       protocol    = "HTTPS"
       status_code = "HTTP_301"
     }
+  }
+
+  tags = merge(local.default_tags, var.tags)
+}
+
+resource "aws_lb_listener" "http_forward" {
+  count             = var.certificate_arn == "" ? 1 : 0
+  load_balancer_arn = aws_lb.this.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.this.arn
   }
 
   tags = merge(local.default_tags, var.tags)
@@ -247,6 +264,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "alb_logs" {
   rule {
     id     = "transition-and-expire"
     status = "Enabled"
+
+    filter {}
 
     transition {
       days          = 30

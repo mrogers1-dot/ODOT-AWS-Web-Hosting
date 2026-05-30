@@ -36,3 +36,27 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_guardduty" {
+  description = "Whether to create a GuardDuty detector. Set to false if already enabled by AWS Organizations."
+  type        = bool
+  default     = true
+}
+
+variable "enable_securityhub" {
+  description = "Whether to enable Security Hub. Set to false if already enabled by AWS Organizations."
+  type        = bool
+  default     = true
+}
+
+variable "enable_config" {
+  description = "Whether to create an AWS Config recorder. Set to false if already enabled by AWS Organizations."
+  type        = bool
+  default     = true
+}
+
+variable "enable_macie" {
+  description = "Whether to enable Macie and create a classification job. Set to false if already enabled by AWS Organizations."
+  type        = bool
+  default     = true
+}

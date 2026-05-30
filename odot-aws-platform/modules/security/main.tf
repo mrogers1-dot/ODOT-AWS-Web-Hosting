@@ -50,7 +50,9 @@ resource "aws_kms_alias" "this" {
 # Findings are forwarded to Security Hub via the native integration
 # (no explicit publishing destination resource is required when both
 # services are enabled in the same account).
+# Set enable_guardduty = false if already enabled by AWS Organizations.
 resource "aws_guardduty_detector" "this" {
+  count  = var.enable_guardduty ? 1 : 0
   enable = true
 
   tags = local.merged_tags
@@ -60,11 +62,13 @@ resource "aws_guardduty_detector" "this" {
 #
 # aws_securityhub_account enables Security Hub in the account.
 # The FSBP standards subscription is created after Security Hub is enabled.
+# Set enable_securityhub = false if already enabled by AWS Organizations.
 resource "aws_securityhub_account" "this" {
-  tags = local.merged_tags
+  count = var.enable_securityhub ? 1 : 0
 }
 
 resource "aws_securityhub_standards_subscription" "fsbp" {
+  count         = var.enable_securityhub ? 1 : 0
   standards_arn = "arn:aws:securityhub:us-east-2::standards/aws-foundational-security-best-practices/v/1.0.0"
 
   depends_on = [aws_securityhub_account.this]
@@ -74,6 +78,7 @@ resource "aws_securityhub_standards_subscription" "fsbp" {
 # audit requirements. Enables Security Hub controls aligned to NIST control families.
 # Requirement 19.1
 resource "aws_securityhub_standards_subscription" "nist" {
+  count         = var.enable_securityhub ? 1 : 0
   standards_arn = "arn:aws:securityhub:us-east-2::standards/nist-800-53/v/5.0.0"
 
   depends_on = [aws_securityhub_account.this]
@@ -83,7 +88,9 @@ resource "aws_securityhub_standards_subscription" "nist" {
 #
 # IAM role that allows Config to call AWS APIs on our behalf and write
 # delivery snapshots to the S3 bucket.
+# Set enable_config = false if already enabled by AWS Organizations.
 resource "aws_iam_role" "config" {
+  count       = var.enable_config ? 1 : 0
   name        = "odot-config-role-${var.account_type}"
   description = "IAM role assumed by AWS Config in the ${var.account_type} account"
 
@@ -105,7 +112,8 @@ resource "aws_iam_role" "config" {
 }
 
 resource "aws_iam_role_policy_attachment" "config" {
-  role       = aws_iam_role.config.name
+  count      = var.enable_config ? 1 : 0
+  role       = aws_iam_role.config[0].name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWS_ConfigRole"
 }
 
@@ -113,8 +121,9 @@ resource "aws_iam_role_policy_attachment" "config" {
 # all_supported = true records all supported resource types.
 # include_global_resource_types = true captures IAM and other global resources.
 resource "aws_config_configuration_recorder" "this" {
+  count    = var.enable_config ? 1 : 0
   name     = "odot-config-${var.account_type}"
-  role_arn = aws_iam_role.config.arn
+  role_arn = aws_iam_role.config[0].arn
 
   recording_group {
     all_supported                 = true
@@ -125,6 +134,7 @@ resource "aws_config_configuration_recorder" "this" {
 # Delivery channel — sends configuration snapshots and history to S3.
 # Must be created before the recorder status resource enables recording.
 resource "aws_config_delivery_channel" "this" {
+  count          = var.enable_config ? 1 : 0
   name           = "odot-config-channel-${var.account_type}"
   s3_bucket_name = var.config_s3_bucket_name
 
@@ -133,7 +143,8 @@ resource "aws_config_delivery_channel" "this" {
 
 # Recorder status — activates the recorder once the delivery channel is ready.
 resource "aws_config_configuration_recorder_status" "this" {
-  name       = aws_config_configuration_recorder.this.name
+  count      = var.enable_config ? 1 : 0
+  name       = aws_config_configuration_recorder.this[0].name
   is_enabled = true
 
   depends_on = [aws_config_delivery_channel.this]
@@ -145,7 +156,8 @@ resource "aws_config_configuration_recorder_status" "this" {
 # All rules depend on the recorder status being enabled first.
 
 resource "aws_config_config_rule" "vpc_default_sg_closed" {
-  name = "vpc-default-security-group-closed"
+  count = var.enable_config ? 1 : 0
+  name  = "vpc-default-security-group-closed"
 
   source {
     owner             = "AWS"
@@ -156,7 +168,8 @@ resource "aws_config_config_rule" "vpc_default_sg_closed" {
 }
 
 resource "aws_config_config_rule" "iam_no_inline_policy" {
-  name = "iam-no-inline-policy"
+  count = var.enable_config ? 1 : 0
+  name  = "iam-no-inline-policy"
 
   source {
     owner             = "AWS"
@@ -167,7 +180,8 @@ resource "aws_config_config_rule" "iam_no_inline_policy" {
 }
 
 resource "aws_config_config_rule" "ecs_task_nonroot_user" {
-  name = "ecs-task-definition-nonroot-user"
+  count = var.enable_config ? 1 : 0
+  name  = "ecs-task-definition-nonroot-user"
 
   source {
     owner             = "AWS"
@@ -178,7 +192,8 @@ resource "aws_config_config_rule" "ecs_task_nonroot_user" {
 }
 
 resource "aws_config_config_rule" "ecs_task_memory_hard_limit" {
-  name = "ecs-task-definition-memory-hard-limit"
+  count = var.enable_config ? 1 : 0
+  name  = "ecs-task-definition-memory-hard-limit"
 
   source {
     owner             = "AWS"
@@ -192,14 +207,16 @@ resource "aws_config_config_rule" "ecs_task_memory_hard_limit" {
 #
 # Enables Macie for sensitive data discovery. The classification job runs
 # daily and scans all S3 buckets in the account.
+# Set enable_macie = false if already enabled by AWS Organizations.
 resource "aws_macie2_account" "this" {
+  count                        = var.enable_macie ? 1 : 0
   status                       = "ENABLED"
   finding_publishing_frequency = "FIFTEEN_MINUTES"
 }
 
 # Scheduled daily classification job covering all S3 buckets.
-# bucket_criteria with no excludes block matches every bucket in the account.
 resource "aws_macie2_classification_job" "this" {
+  count    = var.enable_macie ? 1 : 0
   name     = "odot-macie-scan-${var.account_type}"
   job_type = "SCHEDULED"
 
@@ -209,12 +226,12 @@ resource "aws_macie2_classification_job" "this" {
 
   s3_job_definition {
     bucket_criteria {
-      excludes {
+      includes {
         and {
           simple_criterion {
-            comparator = "NE"
-            key        = "BUCKET_CREATED_AT"
-            values     = ["1970-01-01T00:00:00Z"]
+            comparator = "EQ"
+            key        = "ACCOUNT_ID"
+            values     = [var.account_id]
           }
         }
       }

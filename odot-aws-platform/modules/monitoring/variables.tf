@@ -27,13 +27,15 @@ variable "stage" {
 }
 
 variable "slack_workspace_id" {
-  description = "Slack workspace ID for AWS Chatbot integration."
+  description = "Slack workspace ID for AWS Chatbot integration. Set to empty string to skip Chatbot setup."
   type        = string
+  default     = ""
 }
 
 variable "slack_channel_id" {
   description = "Slack channel ID for alert notifications. Internal account uses #aws-alerts-internal, external uses #aws-alerts-external."
   type        = string
+  default     = ""
 }
 
 variable "alert_email" {

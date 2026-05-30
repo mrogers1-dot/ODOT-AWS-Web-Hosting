@@ -69,6 +69,7 @@ export AWS_PROFILE=odot-external
 - [5. GitHub OIDC Federation (AWS ↔ GitHub)](#5-github-oidc-federation-aws--github)
 - [6. GitHub Repository Variables and Secrets](#6-github-repository-variables-and-secrets)
 - [7. GitHub Environments and Protection Rules](#7-github-environments-and-protection-rules)
+- [7.5. Slack / AWS Chatbot Authorization](#75-slack--aws-chatbot-authorization)
 - [8. Platform Infrastructure Deployment](#8-platform-infrastructure-deployment)
 - [9. Application Onboarding](#9-application-onboarding)
 - [10. Verification Checklist](#10-verification-checklist)
@@ -201,6 +202,26 @@ Each account hosts its own Terraform state — there is no separate management a
 | DOT-Web-External (549136075921) | `odot-terraform-state-549136075921` | `odot-terraform-locks` | `external-dev`, `external-test`, `external-prod` |
 
 This provides full isolation — each account owns its own state and lock table.
+
+### Organization-Managed Security Services
+
+The following services are already enabled at the AWS Organization level and should **not** be re-created by Terraform:
+
+- **GuardDuty** — threat detection (org-delegated)
+- **Security Hub** — compliance standards (org-delegated)
+- **AWS Config** — configuration recording (org-delegated)
+- **Macie** — sensitive data discovery (org-delegated)
+
+When deploying platform stacks, set these flags in `terraform.tfvars` to skip creation:
+
+```hcl
+enable_guardduty   = false
+enable_securityhub = false
+enable_config      = false
+enable_macie       = false
+```
+
+If your account does NOT have these services pre-enabled by the organization, leave them as `true` (the default) and Terraform will create them.
 
 ---
 
@@ -428,6 +449,65 @@ Production deployments require manual approval via GitHub Environments.
 ### Why This Matters
 
 The `deploy-prod` job in `ci-cd.yml` references `environment: production`. GitHub will pause the workflow and require approval from the configured reviewers before the production deployment proceeds.
+
+---
+
+## 7.5. Slack / AWS Chatbot Authorization
+
+AWS Chatbot forwards CloudWatch alarm notifications to Slack. This requires a **manual one-time authorization** between your Slack workspace and each AWS account before Terraform can create the channel configuration.
+
+### Why This Is Manual
+
+AWS Chatbot uses an OAuth flow to connect Slack and AWS. There is no API or CLI command to perform this authorization — it must be done through the AWS Console and Slack's OAuth consent screen.
+
+### Steps (Per AWS Account)
+
+1. Log into the AWS Console for the target account (Internal or External)
+2. Navigate to **[AWS Chatbot](https://console.aws.amazon.com/chatbot/)** (region: `us-east-2`)
+3. Click **"Configure new client"** → select **Slack**
+4. Sign in to your Slack workspace when redirected
+5. Click **Allow** to authorize AWS Chatbot
+6. You'll be redirected back to AWS — your workspace will appear in the list
+
+### Get Your IDs
+
+**Workspace ID:**
+- Visible in the AWS Chatbot console after authorization (format: `T0XXXXXXXXX`)
+- Also available in Slack: click your workspace name → **Settings & administration** → **Workspace settings** → the URL contains the workspace ID
+
+**Channel ID:**
+- In Slack, right-click the target channel → **View channel details** → scroll to bottom → **Channel ID** (format: `C0XXXXXXXXX`)
+
+### Update Terraform Variables
+
+Add the real IDs to your stack's `terraform.tfvars`:
+
+```hcl
+slack_workspace_id = "T0XXXXXXXXX"   # From AWS Chatbot console
+slack_channel_id   = "C0XXXXXXXXX"   # From Slack channel details
+```
+
+### Current Configuration (Testing)
+
+For initial testing, a demo Slack workspace is configured:
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `slack_workspace_id` | `T0B72DR9L5U` | Demo workspace — replace with enterprise when ready |
+| `slack_channel_id` | `C0B74FW9W7L` | Demo channel — replace with `#aws-alerts-internal` when ready |
+
+### Migrating to Enterprise Slack
+
+When the enterprise Slack workspace is ready:
+
+1. Authorize the enterprise workspace in AWS Chatbot (same steps as above)
+2. Create dedicated channels: `#aws-alerts-internal` and `#aws-alerts-external`
+3. Update `terraform.tfvars` in each stack with the new workspace and channel IDs
+4. Run `terraform apply` — Chatbot will recreate the channel configuration pointing to the new workspace
+
+### Conditional Behavior
+
+If `slack_workspace_id` is empty or set to a placeholder (`T0000...`), the Chatbot resources are **skipped** during `terraform apply`. The SNS topic and email subscriptions are still created — you just won't get Slack notifications until a real workspace is authorized and configured.
 
 ---
 
@@ -833,4 +913,69 @@ As the platform evolves, update this document when:
 - New prerequisites are introduced (tools, permissions, configuration)
 - Deployment procedures change
 
-Last verified: May 2026
+Last verified: May 29, 2026
+
+---
+
+## Deployment Progress Tracker
+
+Track what has been completed and what remains. Update this section as you progress.
+
+### Completed (Internal Account — 577881328002)
+
+- [x] IAM Identity Center (SSO) configured — profile `odot-internal`
+- [x] Terraform backend bootstrapped — bucket `odot-terraform-state-577881328002`
+- [x] Backend.tf files configured (split-account mode)
+- [x] GitHub repos created — `ftvizsla/odot-aws-platform`, `ftvizsla/odot-app-template`
+- [x] Platform stack `internal-dev` deployed (VPC, ECS cluster, KMS, OIDC, monitoring)
+- [x] GitHub OIDC federation — role `odot-github-actions-internal` trusts `ftvizsla/*`
+- [x] GitHub repository variables set on both repos
+- [x] GitHub `production` environment created on `odot-app-template`
+- [x] Slack/Chatbot authorized — workspace `T0B72DR9L5U`, channel `C0B74FW9W7L`
+- [x] Application `odot-app-template` onboarded — ECR, ECS service, ALB, alarms deployed
+
+### Remaining (Internal Account)
+
+- [ ] Push a Docker image to ECR and verify ECS tasks start healthy
+- [ ] Deploy `internal-test` stack
+- [ ] Deploy `internal-prod` stack
+- [ ] Set up TLS/DNS (ACM certificate + Route 53) for HTTPS on ALB
+- [ ] Configure CI/CD pipeline end-to-end (push to `dev` → auto-deploy)
+
+### Remaining (External Account — 549136075921)
+
+- [ ] Configure SSO profile `odot-external`
+- [ ] Bootstrap Terraform backend — `./scripts/bootstrap-backend.sh 549136075921`
+- [ ] Authorize Slack/Chatbot in external account
+- [ ] Deploy `external-dev` stack
+- [ ] Deploy `external-test` stack
+- [ ] Deploy `external-prod` stack
+- [ ] Onboard first external application
+
+### Remaining (Enterprise Migration)
+
+- [ ] Obtain access to ODOT GitHub Enterprise organization
+- [ ] Migrate repos from `ftvizsla` to enterprise org
+- [ ] Update OIDC module `github_org` variable and redeploy
+- [ ] Update GitHub repository variables with new role ARNs (if org name changes)
+- [ ] Configure branch protection rules (requires GitHub Team/Enterprise plan)
+- [ ] Add required reviewers to `production` environment
+
+### Remaining (Okta / Admin Dashboard)
+
+- [ ] Set up Okta OIDC App Integration
+- [ ] Create Okta groups (`ODOT-Web-Developers`, `ODOT-Web-Admins`)
+- [ ] Store Okta client secret in Secrets Manager
+- [ ] Deploy admin dashboard infrastructure
+- [ ] Replace demo Slack workspace with enterprise Slack
+
+### Known Issues / Workarounds Applied
+
+| Issue | Workaround | Permanent Fix |
+|-------|-----------|---------------|
+| GuardDuty/SecurityHub/Config already org-managed | `enable_*` flags set to `false` in tfvars | No fix needed — this is correct for org-delegated accounts |
+| No ACM certificate yet | HTTPS listener skipped; ALB serves HTTP on port 80 | Create ACM cert + Route 53 hosted zone, add `certificate_arn` to tfvars |
+| CloudWatch log group KMS encryption | Removed KMS from log group (key policy needs `logs.amazonaws.com` grant) | Update KMS key policy in security module to allow CloudWatch Logs |
+| GitHub Free plan | No environment protection rules (approval gates) | Migrate to GitHub Team/Enterprise |
+| ECS tasks crash-looping | No Docker image in ECR yet | Push initial image via CI/CD or manually |
+

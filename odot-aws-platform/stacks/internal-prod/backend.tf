@@ -6,7 +6,7 @@ terraform {
     bucket         = "odot-terraform-state-577881328002"
     key            = "internal-prod/terraform.tfstate"
     region         = "us-east-2"
-    encrypt        = true
-    dynamodb_table = "odot-terraform-locks"
+    encrypt      = true
+    use_lockfile = true
   }
 }

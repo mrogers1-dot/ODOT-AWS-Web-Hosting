@@ -203,16 +203,18 @@ resource "aws_cloudwatch_metric_alarm" "memory_low" {
   })
 }
 
-# Composite alarm: triggers scale-in only when BOTH CPU AND memory are low.
-# This prevents premature scale-in when only one metric has dropped while
-# the other remains elevated.
+# Composite alarm: fires when BOTH CPU AND memory are low.
+# Used for visibility/notification only — scale-in is triggered by the
+# individual metric alarms via the step scaling policy.
 resource "aws_cloudwatch_composite_alarm" "scale_in" {
   alarm_name        = "odot-${var.app_name}-${var.stage}-scale-in-composite"
   alarm_description = "Composite alarm for scale-in: triggers when both CPU and memory are below 30% for 10 minutes"
 
   alarm_rule = "ALARM(${aws_cloudwatch_metric_alarm.cpu_low.alarm_name}) AND ALARM(${aws_cloudwatch_metric_alarm.memory_low.alarm_name})"
 
-  alarm_actions = [aws_appautoscaling_policy.scale_in.arn]
+  # Composite alarms cannot trigger auto-scaling actions directly.
+  # Notification only — scale-in is handled by individual alarm → step policy.
+  alarm_actions = [var.sns_topic_arn]
 
   tags = merge(local.default_tags, var.tags, {
     Name = "odot-${var.app_name}-${var.stage}-scale-in-composite"

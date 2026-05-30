@@ -243,6 +243,29 @@ Full details in [DEPLOYMENT-PREREQUISITES.md § Application Onboarding](DEPLOYME
 
 ---
 
+## Current Status
+
+> **Last updated:** May 29, 2026
+
+| Component | Internal (577881328002) | External (549136075921) |
+|-----------|------------------------|------------------------|
+| SSO Profile | ✅ `odot-internal` | ⏳ `odot-external` (configured, not bootstrapped) |
+| Terraform Backend | ✅ Bootstrapped | ⏳ Needs bootstrap |
+| Platform (Dev) | ✅ Deployed | ⏳ Not deployed |
+| Platform (Test) | ⏳ Not deployed | ⏳ Not deployed |
+| Platform (Prod) | ⏳ Not deployed | ⏳ Not deployed |
+| OIDC Federation | ✅ `ftvizsla` org | ⏳ Not deployed |
+| Slack/Chatbot | ✅ Demo workspace | ⏳ Not authorized |
+| First App | ✅ `odot-app-template` (HTTP only) | ⏳ — |
+| TLS/HTTPS | ⏳ Needs ACM cert | ⏳ — |
+| CI/CD Pipeline | ⏳ Needs first image push | ⏳ — |
+
+**Next steps:** Push a Docker image to ECR, verify ECS tasks start healthy, then deploy remaining stacks.
+
+See [DEPLOYMENT-PREREQUISITES.md § Progress Tracker](DEPLOYMENT-PREREQUISITES.md#deployment-progress-tracker) for the full checklist.
+
+---
+
 ## Contributing
 
 - **Platform changes**: See [odot-aws-platform/README.md § Contributing](odot-aws-platform/README.md#contributing)

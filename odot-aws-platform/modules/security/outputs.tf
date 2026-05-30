@@ -17,5 +17,5 @@ output "kms_key_id" {
 
 output "guardduty_detector_id" {
   description = "ID of the GuardDuty detector enabled in this account. Used for cross-account GuardDuty delegation and integration tests."
-  value       = aws_guardduty_detector.this.id
+  value       = var.enable_guardduty ? aws_guardduty_detector.this[0].id : ""
 }

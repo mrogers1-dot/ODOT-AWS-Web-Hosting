@@ -60,12 +60,12 @@ resource "aws_ecr_lifecycle_policy" "app" {
     rules = [
       {
         rulePriority = 1
-        description  = "Retain a maximum of 10 tagged images"
+        description  = "Expire untagged images older than 7 days"
         selection = {
-          tagStatus     = "tagged"
-          tagPrefixList = [""]
-          countType     = "imageCountMoreThan"
-          countNumber   = 10
+          tagStatus   = "untagged"
+          countType   = "sinceImagePushed"
+          countNumber = 7
+          countUnit   = "days"
         }
         action = {
           type = "expire"
@@ -73,12 +73,11 @@ resource "aws_ecr_lifecycle_policy" "app" {
       },
       {
         rulePriority = 2
-        description  = "Expire untagged images older than 7 days"
+        description  = "Retain a maximum of 10 images"
         selection = {
-          tagStatus   = "untagged"
-          countType   = "sinceImagePushed"
-          countNumber = 7
-          countUnit   = "days"
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
         }
         action = {
           type = "expire"

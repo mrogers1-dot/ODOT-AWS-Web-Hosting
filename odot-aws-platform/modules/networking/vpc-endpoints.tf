@@ -36,7 +36,7 @@ resource "aws_security_group" "vpc_endpoints" {
   count = local.is_internal ? 1 : 0
 
   name        = "odot-${var.account_type}-${var.stage}-vpce-sg"
-  description = "Security group for VPC interface endpoints — allows HTTPS from VPC CIDR only"
+  description = "Security group for VPC interface endpoints - allows HTTPS from VPC CIDR only"
   vpc_id      = aws_vpc.main.id
 
   tags = merge(local.merged_tags, {

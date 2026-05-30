@@ -16,14 +16,13 @@ terraform {
     }
   }
 
-  # Backend configuration — update bucket and region for your environment.
-  # State is stored per account-stage combination.
+  # Backend configuration — state stored in the internal account.
   backend "s3" {
-    # bucket         = "odot-terraform-state-ACCOUNT-ID"
-    # key            = "apps/{app_name}/terraform.tfstate"
-    # region         = "us-east-2"
-    # dynamodb_table = "odot-terraform-locks"
-    # encrypt        = true
+    bucket       = "odot-terraform-state-577881328002"
+    key          = "apps/odot-app-template/terraform.tfstate"
+    region       = "us-east-2"
+    use_lockfile = true
+    encrypt      = true
   }
 }
 
@@ -45,8 +44,10 @@ provider "aws" {
 # CloudWatch alarms for this application.
 # -----------------------------------------------------------------------------
 module "app_service" {
-  # Source from the platform repository. Update the ref to pin a specific version.
-  source = "git::https://github.com/ODOT-GitHub-Org/odot-aws-platform.git//modules/app-service?ref=main"
+  # Source from the platform repository.
+  # TEMPORARY: Using personal GitHub (ftvizsla) for testing.
+  # PRODUCTION: Change to "git::https://github.com/ODOT-GitHub-Org/odot-aws-platform.git//modules/app-service?ref=main"
+  source = "git::https://github.com/ftvizsla/odot-aws-platform.git//modules/app-service?ref=main"
 
   # Application configuration
   app_name       = var.app_name

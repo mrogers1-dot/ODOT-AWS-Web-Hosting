@@ -47,6 +47,10 @@ module "security" {
   account_id            = var.account_id
   org_id                = var.org_id
   config_s3_bucket_name = var.config_s3_bucket_name
+  enable_guardduty      = var.enable_guardduty
+  enable_securityhub    = var.enable_securityhub
+  enable_config         = var.enable_config
+  enable_macie          = var.enable_macie
   tags                  = var.tags
 }
 

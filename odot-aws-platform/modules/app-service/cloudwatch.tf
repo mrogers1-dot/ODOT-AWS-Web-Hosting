@@ -20,7 +20,6 @@
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/${var.app_name}/${var.stage}"
   retention_in_days = var.stage == "prod" ? 365 : 90
-  kms_key_id        = var.kms_key_arn
 
   tags = merge(local.default_tags, var.tags, {
     Name = "/ecs/${var.app_name}/${var.stage}"

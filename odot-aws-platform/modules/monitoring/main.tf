@@ -34,6 +34,9 @@ locals {
 
   # Chatbot configuration name
   chatbot_config_name = "odot-chatbot-${var.account_type}-${var.stage}"
+
+  # Only create Slack/Chatbot resources if a real workspace ID is provided
+  enable_slack = var.slack_workspace_id != "" && !startswith(var.slack_workspace_id, "T0000")
 }
 
 # ── Data Sources ──────────────────────────────────────────────────────────────
@@ -133,8 +136,10 @@ resource "aws_sns_topic_subscription" "email" {
 # alarm context in Slack messages.
 #
 # Requirement 10.4: Route alerts through AWS Chatbot to Slack
+# Skipped when slack_workspace_id is empty or a placeholder.
 resource "aws_iam_role" "chatbot" {
-  name = "odot-chatbot-${var.account_type}-${var.stage}"
+  count = local.enable_slack ? 1 : 0
+  name  = "odot-chatbot-${var.account_type}-${var.stage}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -155,8 +160,9 @@ resource "aws_iam_role" "chatbot" {
 }
 
 resource "aws_iam_role_policy" "chatbot" {
-  name = "odot-chatbot-${var.account_type}-${var.stage}-policy"
-  role = aws_iam_role.chatbot.id
+  count = local.enable_slack ? 1 : 0
+  name  = "odot-chatbot-${var.account_type}-${var.stage}-policy"
+  role  = aws_iam_role.chatbot[0].id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -182,8 +188,9 @@ resource "aws_iam_role_policy" "chatbot" {
 }
 
 resource "aws_chatbot_slack_channel_configuration" "alerts" {
+  count              = local.enable_slack ? 1 : 0
   configuration_name = local.chatbot_config_name
-  iam_role_arn       = aws_iam_role.chatbot.arn
+  iam_role_arn       = aws_iam_role.chatbot[0].arn
   slack_channel_id   = var.slack_channel_id
   slack_team_id      = var.slack_workspace_id
   sns_topic_arns     = [aws_sns_topic.alerts.arn]

@@ -95,6 +95,7 @@ resource "aws_ecs_task_definition" "app" {
   network_mode             = "awsvpc"
   cpu                      = tostring(var.cpu)
   memory                   = tostring(var.memory)
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
 
   # Runtime platform configuration differs by OS family.
   # Linux: operatingSystemFamily = "LINUX"

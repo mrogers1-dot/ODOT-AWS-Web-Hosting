@@ -240,12 +240,18 @@ Provisions all per-application resources: ECR repo, ECS task definition, ECS ser
 
 Provisions account-wide security services: GuardDuty, Security Hub, Config, Macie, KMS keys, and SCPs.
 
+Services that are already enabled by AWS Organizations can be skipped via input variables.
+
 | Input | Type | Description |
 |-------|------|-------------|
 | `account_type` | `string` | `"internal"` or `"external"` |
 | `account_id` | `string` | AWS account ID |
 | `org_id` | `string` | AWS Organizations ID |
-| `tags` | `map(string)` | Resource tags |
+| `enable_guardduty` | `bool` | Set `false` if org-managed (default: `true`) |
+| `enable_securityhub` | `bool` | Set `false` if org-managed (default: `true`) |
+| `enable_config` | `bool` | Set `false` if org-managed (default: `true`) |
+| `enable_macie` | `bool` | Set `false` if org-managed (default: `true`) |
+| `tags` | `map(string)` | Must include `Environment`, `Project`, `Owner` |
 
 **Outputs**: `kms_key_arn`, `kms_key_id`, `guardduty_detector_id`
 
@@ -253,11 +259,13 @@ Provisions account-wide security services: GuardDuty, Security Hub, Config, Maci
 
 Provisions CloudWatch dashboards, SNS topics, AWS Chatbot Slack integrations, and AWS Budgets.
 
+Slack/Chatbot resources are **conditional** — they are only created when a valid (non-placeholder) `slack_workspace_id` is provided. The Slack workspace must be manually authorized in the AWS Chatbot console before Terraform can create the channel configuration.
+
 | Input | Type | Description |
 |-------|------|-------------|
 | `account_type` | `string` | `"internal"` or `"external"` |
 | `stage` | `string` | Deployment stage |
-| `slack_workspace_id` | `string` | Slack workspace ID |
+| `slack_workspace_id` | `string` | Slack workspace ID (empty or `T0000...` = skip Chatbot) |
 | `slack_channel_id` | `string` | Slack channel ID |
 | `alert_email` | `string` | Email for ServiceNow/FortiSIEM |
 | `budget_limit_usd` | `number` | Monthly budget limit |
@@ -384,6 +392,47 @@ Tests operate on `terraform plan` JSON output — no AWS credentials are require
 | `scripts/verify-prerequisites.sh` | Validate all deployment prerequisites are in place |
 | `scripts/scanner-gate.go` | Evaluates Trivy/Inspector scan results; returns FAIL on Critical/High findings |
 | `scripts/image-tag.go` | Generates Docker image tags from commit SHA and branch name |
+
+---
+
+## Current Deployment Status (Testing)
+
+The platform is currently deployed for testing using a personal GitHub account. This section documents the temporary configuration that will change when migrating to enterprise.
+
+| Setting | Current (Testing) | Production (Future) |
+|---------|-------------------|---------------------|
+| GitHub org | `ftvizsla` | ODOT GitHub Enterprise org |
+| Platform repo | `ftvizsla/odot-aws-platform` | `ODOT-GitHub-Org/odot-aws-platform` |
+| App template repo | `ftvizsla/odot-app-template` | `ODOT-GitHub-Org/odot-app-template` |
+| Slack workspace | `T0B72DR9L5U` (demo) | Enterprise Slack workspace |
+| Slack channel | `C0B74FW9W7L` (demo) | `#aws-alerts-internal` / `#aws-alerts-external` |
+| Environment protection | None (GitHub Free) | Required reviewers on `production` |
+| OIDC trust | `repo:ftvizsla/*` | `repo:ODOT-GitHub-Org/*` |
+
+### Deployed Stacks
+
+| Stack | Status | Notes |
+|-------|--------|-------|
+| `internal-dev` | ✅ Deployed | Full stack: networking, ECS, security (KMS only), monitoring, OIDC |
+| `internal-test` | ⏳ Not deployed | Same config, different state key |
+| `internal-prod` | ⏳ Not deployed | Uses Fargate On-Demand instead of Spot |
+| `external-dev` | ⏳ Not deployed | Requires external account bootstrap first |
+| `external-test` | ⏳ Not deployed | — |
+| `external-prod` | ⏳ Not deployed | — |
+
+### Deployed Applications
+
+| App | Account | Stage | ECS Service | ALB | HTTPS |
+|-----|---------|-------|-------------|-----|-------|
+| `odot-app-template` | Internal | Dev | `odot-app-template-dev` | ✅ (HTTP only) | ⏳ Needs ACM cert |
+
+### Security Services (Org-Managed)
+
+These services are enabled at the AWS Organization level and are NOT managed by Terraform in this repo:
+
+- GuardDuty, Security Hub, AWS Config, Macie
+
+The security module creates only the **KMS CMK** (`alias/odot-internal`) when `enable_*` flags are `false`.
 
 ---
 
