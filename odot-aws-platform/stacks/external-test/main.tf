@@ -1,9 +1,10 @@
 # main.tf — External Test stack composition.
 #
-# Wires together the five platform modules (networking, ecs-cluster, security,
-# monitoring, oidc) for the external-test account-stage combination.
-# External stacks include public subnets with IGW and expose a waf_acl_arn
-# output for app-service consumers.
+# In a shared-account testing setup, account-level singletons (OIDC, monitoring,
+# security/KMS) are deployed once by the dev stack. This stack only deploys
+# per-stage resources: networking and ECS cluster.
+#
+# In production (separate accounts per stage), all modules would be enabled.
 #
 # Requirements: 1.1, 3.3, 8.3
 
@@ -38,47 +39,13 @@ module "ecs_cluster" {
   tags         = var.tags
 }
 
-# ── Security ──────────────────────────────────────────────────────────────────
+# ── Security, Monitoring, OIDC ────────────────────────────────────────────────
 #
-# Provisions account-wide security services: KMS CMK, GuardDuty, Security Hub,
-# AWS Config, and Macie.
-module "security" {
-  source = "../../modules/security"
-
-  account_type          = local.account_type
-  account_id            = var.account_id
-  org_id                = var.org_id
-  config_s3_bucket_name = var.config_s3_bucket_name
-  tags                  = var.tags
-}
-
-# ── Monitoring ────────────────────────────────────────────────────────────────
+# SKIPPED in shared-account testing. These are account-level singletons
+# already deployed by the external-dev stack:
+#   - KMS key: alias/odot-external
+#   - SNS topic: odot-alerts-external
+#   - Chatbot: odot-chatbot-external-dev
+#   - OIDC provider + role: odot-github-actions-external
 #
-# Provisions CloudWatch dashboards, SNS topic, AWS Chatbot Slack integration,
-# EventBridge rules for Security Hub findings, and AWS Budgets.
-module "monitoring" {
-  source = "../../modules/monitoring"
-
-  account_type       = local.account_type
-  stage              = local.stage
-  slack_workspace_id = var.slack_workspace_id
-  slack_channel_id   = var.slack_channel_id
-  alert_email        = var.alert_email
-  kms_key_arn        = module.security.kms_key_arn
-  budget_limit_usd   = var.budget_limit_usd
-  tags               = var.tags
-}
-
-# ── OIDC ──────────────────────────────────────────────────────────────────────
-#
-# Establishes the GitHub OIDC identity provider and IAM role for keyless
-# CI/CD authentication from GitHub Actions.
-module "oidc" {
-  source = "../../modules/oidc"
-
-  github_org   = var.github_org
-  github_repos = var.github_repos
-  account_id   = var.account_id
-  account_type = local.account_type
-  tags         = var.tags
-}
+# When migrating to separate accounts per stage, uncomment these modules.

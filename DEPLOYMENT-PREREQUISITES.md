@@ -491,10 +491,11 @@ slack_channel_id   = "C0XXXXXXXXX"   # From Slack channel details
 
 For initial testing, a demo Slack workspace is configured:
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `slack_workspace_id` | `T0B72DR9L5U` | Demo workspace — replace with enterprise when ready |
-| `slack_channel_id` | `C0B74FW9W7L` | Demo channel — replace with `#aws-alerts-internal` when ready |
+| Variable | Value | Account | Notes |
+|----------|-------|---------|-------|
+| `slack_workspace_id` | `T0B72DR9L5U` | Both | Demo workspace — replace with enterprise when ready |
+| `slack_channel_id` | `C0B74FW9W7L` | Internal | Demo channel — replace with `#aws-alerts-internal` when ready |
+| `slack_channel_id` | `C0B74G0EN0J` | External | Demo channel — replace with `#aws-alerts-external` when ready |
 
 ### Migrating to Enterprise Slack
 
@@ -928,29 +929,34 @@ Track what has been completed and what remains. Update this section as you progr
 - [x] Backend.tf files configured (split-account mode)
 - [x] GitHub repos created — `ftvizsla/odot-aws-platform`, `ftvizsla/odot-app-template`
 - [x] Platform stack `internal-dev` deployed (VPC, ECS cluster, KMS, OIDC, monitoring)
+- [x] Platform stack `internal-test` deployed (VPC, ECS cluster)
+- [x] Platform stack `internal-prod` deployed (VPC, ECS cluster)
 - [x] GitHub OIDC federation — role `odot-github-actions-internal` trusts `ftvizsla/*`
 - [x] GitHub repository variables set on both repos
 - [x] GitHub `production` environment created on `odot-app-template`
 - [x] Slack/Chatbot authorized — workspace `T0B72DR9L5U`, channel `C0B74FW9W7L`
 - [x] Application `odot-app-template` onboarded — ECR, ECS service, ALB, alarms deployed
 
-### Remaining (Internal Account)
+### Completed (External Account — 549136075921)
 
-- [ ] Push a Docker image to ECR and verify ECS tasks start healthy
-- [ ] Deploy `internal-test` stack
-- [ ] Deploy `internal-prod` stack
-- [ ] Set up TLS/DNS (ACM certificate + Route 53) for HTTPS on ALB
-- [ ] Configure CI/CD pipeline end-to-end (push to `dev` → auto-deploy)
+- [x] IAM Identity Center (SSO) configured — profile `odot-external`
+- [x] Terraform backend bootstrapped — bucket `odot-terraform-state-549136075921`
+- [x] Slack/Chatbot authorized — workspace `T0B72DR9L5U`, channel `C0B74G0EN0J`
+- [x] Platform stack `external-dev` deployed (VPC with public/private subnets, IGW, NAT, ECS cluster, KMS, OIDC, monitoring)
+- [x] Platform stack `external-test` deployed (VPC, ECS cluster)
+- [x] Platform stack `external-prod` deployed (VPC, ECS cluster)
+- [x] GitHub OIDC federation — role `odot-github-actions-external` trusts `ftvizsla/*`
 
-### Remaining (External Account — 549136075921)
+### Remaining (Next Session Priority)
 
-- [ ] Configure SSO profile `odot-external`
-- [ ] Bootstrap Terraform backend — `./scripts/bootstrap-backend.sh 549136075921`
-- [ ] Authorize Slack/Chatbot in external account
-- [ ] Deploy `external-dev` stack
-- [ ] Deploy `external-test` stack
-- [ ] Deploy `external-prod` stack
-- [ ] Onboard first external application
+- [x] ~~Push a Docker image to ECR and verify ECS tasks start healthy~~ ✅ Done
+- [x] ~~Onboard first external application~~ ✅ `traffic-dash` deployed to external-dev
+- [ ] Wire CI/CD pipeline end-to-end (push to `dev` → auto-build → ECR → ECS deploy)
+- [ ] Set up TLS/HTTPS (domain, Route 53, ACM certificate, HTTPS listener)
+- [ ] Set up WAF Web ACL for external ALBs
+- [ ] Fix KMS key policy to allow CloudWatch Logs encryption
+- [ ] Deploy traffic dashboard to internal-dev (proves internal pipeline works)
+- [ ] Add `output` blocks to all stack `main.tf` files
 
 ### Remaining (Enterprise Migration)
 
@@ -963,19 +969,100 @@ Track what has been completed and what remains. Update this section as you progr
 
 ### Remaining (Okta / Admin Dashboard)
 
+- [ ] Sign up for Okta developer account (free) at developer.okta.com/signup
 - [ ] Set up Okta OIDC App Integration
 - [ ] Create Okta groups (`ODOT-Web-Developers`, `ODOT-Web-Admins`)
 - [ ] Store Okta client secret in Secrets Manager
 - [ ] Deploy admin dashboard infrastructure
 - [ ] Replace demo Slack workspace with enterprise Slack
 
+### Deployed Applications
+
+| App | Account | Stage | URL | Status |
+|-----|---------|-------|-----|--------|
+| `traffic-dash` | External (549136075921) | Dev | `http://odot-traffic-dash-dev-alb-398935479.us-east-2.elb.amazonaws.com` | ✅ Live |
+
 ### Known Issues / Workarounds Applied
 
 | Issue | Workaround | Permanent Fix |
 |-------|-----------|---------------|
-| GuardDuty/SecurityHub/Config already org-managed | `enable_*` flags set to `false` in tfvars | No fix needed — this is correct for org-delegated accounts |
+| GuardDuty/SecurityHub/Config already org-managed | `enable_*` flags set to `false` in tfvars | No fix needed — correct for org-delegated accounts |
 | No ACM certificate yet | HTTPS listener skipped; ALB serves HTTP on port 80 | Create ACM cert + Route 53 hosted zone, add `certificate_arn` to tfvars |
 | CloudWatch log group KMS encryption | Removed KMS from log group (key policy needs `logs.amazonaws.com` grant) | Update KMS key policy in security module to allow CloudWatch Logs |
 | GitHub Free plan | No environment protection rules (approval gates) | Migrate to GitHub Team/Enterprise |
-| ECS tasks crash-looping | No Docker image in ECR yet | Push initial image via CI/CD or manually |
+| Shared-account singleton conflicts | Test/prod stacks only deploy networking + ECS (skip OIDC, monitoring, security) | Move to 6 accounts (one per stage) or make modules account-aware |
+| ALB name 32-char limit | Shortened app name to `traffic-dash` | Add name truncation logic to app-service module |
+| Docker ARM vs AMD64 | Must use `--platform linux/amd64` on Apple Silicon Macs | CI/CD pipeline runs on GitHub-hosted runners (amd64 natively) |
+| KMS key pending deletion (external) | Cancelled deletion and re-enabled key | Avoid `terraform destroy` on security module without understanding implications |
+
+---
+
+## Future Enhancements & Architecture Evolution
+
+### Near-Term (Next 1-2 Sessions)
+
+| Enhancement | Description | Effort |
+|-------------|-------------|--------|
+| CI/CD automation | GitHub Actions workflow: push → build → scan → deploy | Medium |
+| TLS/HTTPS | ACM certificate + Route 53 + HTTPS listener on ALBs | Low |
+| WAF deployment | Enable managed WAF rules on external ALBs | Low |
+| KMS key policy | Grant `logs.amazonaws.com` permission for log encryption | Low |
+| Stack outputs | Add `output` blocks to all stack `main.tf` files | Low |
+
+### Medium-Term (Enterprise Readiness)
+
+| Enhancement | Description | Effort |
+|-------------|-------------|--------|
+| 6-account architecture | One AWS account per stage eliminates singleton conflicts (see below) | High |
+| Okta federation | Real IdP for admin dashboard and future app auth | Medium |
+| GitHub Enterprise migration | Branch protection, required reviewers, org-level secrets | Medium |
+| Terraform Cloud/HCP | Remote state management, plan approvals, drift detection | Medium |
+| Cost optimization | Reserved capacity for prod, Savings Plans analysis | Low |
+
+### Long-Term (Platform Maturity)
+
+| Enhancement | Description | Effort |
+|-------------|-------------|--------|
+| Service mesh | AWS App Mesh or ECS Service Connect for inter-service communication | High |
+| Multi-region DR | Active-passive in us-west-2 | High |
+| Centralized logging | OpenSearch or CloudWatch cross-account log aggregation | Medium |
+| Platform self-service portal | Web UI for teams to onboard apps without CLI | High |
+| Automated compliance reporting | Scheduled NIST 800-53 reports from Security Hub | Medium |
+| Blue/green deployments | CodeDeploy integration for zero-downtime production releases | Medium |
+| Container image signing | AWS Signer for supply chain security | Medium |
+
+### Architecture Decision: 6 Accounts vs 2 Accounts
+
+**Current state:** 2 accounts (Internal + External), 3 stages each sharing the same account.
+
+**Problem:** Account-level singletons (OIDC provider, KMS keys, SNS topics, Chatbot configs) conflict when multiple stages share one account. Test/prod stacks had to skip these modules.
+
+**Target state:** 6 accounts under the AWS Organization:
+
+```
+AWS Organizations
+└── OU: ODOT-Web
+    ├── DOT-Web-Internal-Dev    (new)
+    ├── DOT-Web-Internal-Test   (new)
+    ├── DOT-Web-Internal-Prod   (existing: 577881328002)
+    ├── DOT-Web-External-Dev    (new)
+    ├── DOT-Web-External-Test   (new)
+    └── DOT-Web-External-Prod   (existing: 549136075921)
+```
+
+**Benefits:**
+- Each stack deploys ALL modules (no singleton workarounds)
+- True blast-radius isolation (dev can't affect prod)
+- Independent IAM boundaries per stage
+- Cleaner cost allocation per environment
+- Matches AWS Well-Architected multi-account best practices
+
+**Migration path:**
+1. Create 4 new accounts in the Organization
+2. Bootstrap Terraform backends in each
+3. Deploy full stacks (all modules) to new accounts
+4. Migrate existing dev workloads from shared accounts
+5. Repurpose existing accounts as prod-only
+
+This is a significant effort but eliminates all the workarounds applied during initial setup.
 

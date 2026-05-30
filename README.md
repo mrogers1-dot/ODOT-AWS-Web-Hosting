@@ -249,18 +249,21 @@ Full details in [DEPLOYMENT-PREREQUISITES.md § Application Onboarding](DEPLOYME
 
 | Component | Internal (577881328002) | External (549136075921) |
 |-----------|------------------------|------------------------|
-| SSO Profile | ✅ `odot-internal` | ⏳ `odot-external` (configured, not bootstrapped) |
-| Terraform Backend | ✅ Bootstrapped | ⏳ Needs bootstrap |
-| Platform (Dev) | ✅ Deployed | ⏳ Not deployed |
-| Platform (Test) | ⏳ Not deployed | ⏳ Not deployed |
-| Platform (Prod) | ⏳ Not deployed | ⏳ Not deployed |
-| OIDC Federation | ✅ `ftvizsla` org | ⏳ Not deployed |
-| Slack/Chatbot | ✅ Demo workspace | ⏳ Not authorized |
-| First App | ✅ `odot-app-template` (HTTP only) | ⏳ — |
-| TLS/HTTPS | ⏳ Needs ACM cert | ⏳ — |
-| CI/CD Pipeline | ⏳ Needs first image push | ⏳ — |
+| SSO Profile | ✅ `odot-internal` | ✅ `odot-external` |
+| Terraform Backend | ✅ Bootstrapped | ✅ Bootstrapped |
+| Platform (Dev) | ✅ Deployed | ✅ Deployed |
+| Platform (Test) | ✅ Deployed | ✅ Deployed |
+| Platform (Prod) | ✅ Deployed | ✅ Deployed |
+| OIDC Federation | ✅ `ftvizsla` org | ✅ `ftvizsla` org |
+| Slack/Chatbot | ✅ `C0B74FW9W7L` | ✅ `C0B74G0EN0J` |
+| First App | ⏳ Not deployed to internal | ✅ `traffic-dash` — [Live Demo](http://odot-traffic-dash-dev-alb-398935479.us-east-2.elb.amazonaws.com) |
+| TLS/HTTPS | ⏳ Needs ACM cert | ⏳ Needs ACM cert |
+| WAF | N/A (internal) | ⏳ Not configured |
+| CI/CD Pipeline | ⏳ Next session | ⏳ Next session |
 
-**Next steps:** Push a Docker image to ECR, verify ECS tasks start healthy, then deploy remaining stacks.
+**Live demo:** [http://odot-traffic-dash-dev-alb-398935479.us-east-2.elb.amazonaws.com](http://odot-traffic-dash-dev-alb-398935479.us-east-2.elb.amazonaws.com)
+
+**Next session:** Wire CI/CD pipeline (push to `dev` → auto-deploy), then TLS/HTTPS.
 
 See [DEPLOYMENT-PREREQUISITES.md § Progress Tracker](DEPLOYMENT-PREREQUISITES.md#deployment-progress-tracker) for the full checklist.
 

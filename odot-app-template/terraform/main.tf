@@ -16,10 +16,10 @@ terraform {
     }
   }
 
-  # Backend configuration — state stored in the internal account.
+  # Backend configuration — state stored in the external account.
   backend "s3" {
-    bucket       = "odot-terraform-state-577881328002"
-    key          = "apps/odot-app-template/terraform.tfstate"
+    bucket       = "odot-terraform-state-549136075921"
+    key          = "apps/traffic-dash/terraform.tfstate"
     region       = "us-east-2"
     use_lockfile = true
     encrypt      = true

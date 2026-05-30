@@ -413,18 +413,18 @@ The platform is currently deployed for testing using a personal GitHub account. 
 
 | Stack | Status | Notes |
 |-------|--------|-------|
-| `internal-dev` | ✅ Deployed | Full stack: networking, ECS, security (KMS only), monitoring, OIDC |
-| `internal-test` | ⏳ Not deployed | Same config, different state key |
-| `internal-prod` | ⏳ Not deployed | Uses Fargate On-Demand instead of Spot |
-| `external-dev` | ⏳ Not deployed | Requires external account bootstrap first |
-| `external-test` | ⏳ Not deployed | — |
-| `external-prod` | ⏳ Not deployed | — |
+| `internal-dev` | ✅ Deployed | VPC (private only, VPC endpoints), ECS, KMS, monitoring, OIDC |
+| `internal-test` | ✅ Deployed | VPC (private only, VPC endpoints), ECS cluster |
+| `internal-prod` | ✅ Deployed | VPC (private only, VPC endpoints), ECS cluster (Fargate On-Demand) |
+| `external-dev` | ✅ Deployed | VPC (public + private, IGW, NAT), ECS, KMS, monitoring, OIDC |
+| `external-test` | ✅ Deployed | VPC (public + private, IGW, NAT), ECS cluster |
+| `external-prod` | ✅ Deployed | VPC (public + private, IGW, NAT), ECS cluster (Fargate On-Demand) |
 
 ### Deployed Applications
 
-| App | Account | Stage | ECS Service | ALB | HTTPS |
-|-----|---------|-------|-------------|-----|-------|
-| `odot-app-template` | Internal | Dev | `odot-app-template-dev` | ✅ (HTTP only) | ⏳ Needs ACM cert |
+| App | Account | Stage | ECS Service | ALB | URL |
+|-----|---------|-------|-------------|-----|-----|
+| `traffic-dash` | External | Dev | `traffic-dash-dev` | ✅ (HTTP) | [Live Demo](http://odot-traffic-dash-dev-alb-398935479.us-east-2.elb.amazonaws.com) |
 
 ### Security Services (Org-Managed)
 

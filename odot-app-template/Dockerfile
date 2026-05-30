@@ -1,16 +1,10 @@
-# Dockerfile
+# Dockerfile — ODOT Traffic Dashboard
 #
-# Multi-stage build template for ODOT web applications.
-# Uses minimal base image and runs as non-root user (UID 1000) for security.
-#
-# Customize the build stage for your application runtime (Node.js, Python, .NET, Java, etc.)
-# The production stage uses Alpine for minimal attack surface.
-#
-# Requirements: 7.2, 9.8
+# Multi-stage build: Vite builds the React frontend, Express serves everything.
+# Runs as non-root user (UID 1000) for ECS Fargate security compliance.
 
 # =============================================================================
-# Stage 1: Build
-# Install dependencies and compile the application.
+# Stage 1: Build the React frontend
 # =============================================================================
 FROM node:20-alpine AS build
 
@@ -19,40 +13,46 @@ WORKDIR /app
 # Copy dependency manifests first for better layer caching
 COPY package*.json ./
 
-# Install dependencies (production only for smaller image)
-RUN npm ci --only=production
+# Install ALL dependencies (including devDependencies for Vite build)
+RUN npm ci
 
-# Copy application source
+# Copy source files
 COPY . .
 
-# Build the application (if applicable)
-# RUN npm run build
+# Build the React app
+RUN npm run build
 
 # =============================================================================
-# Stage 2: Production
-# Minimal runtime image with non-root user.
+# Stage 2: Production runtime
 # =============================================================================
 FROM node:20-alpine AS production
 
-# Security: run as non-root user
-RUN addgroup -g 1000 appgroup && \
-    adduser -u 1000 -G appgroup -s /bin/sh -D appuser
-
 WORKDIR /app
 
-# Copy only production artifacts from build stage
-COPY --from=build --chown=appuser:appgroup /app/node_modules ./node_modules
-COPY --from=build --chown=appuser:appgroup /app .
+# Copy package files and install production dependencies only
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Switch to non-root user (UID 1000)
-USER 1000
+# Copy the Express server
+COPY server.js ./
 
-# Expose the application port (must match container_port in terraform.tfvars)
+# Copy the built frontend from the build stage
+COPY --from=build /app/dist ./dist
+
+# Use the built-in node user (UID 1000) — no need to create one
+USER node
+
+# OHGO API key (public domain, not sensitive)
+ENV OHGO_API_KEY=d0215db2-60e6-4e54-b0cd-04ecda3a5346
+ENV PORT=8080
+ENV NODE_ENV=production
+
+# Expose the application port
 EXPOSE 8080
 
-# Health check for ECS/ALB integration
+# Health check for ECS/ALB
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Start the application
+# Start the server
 CMD ["node", "server.js"]

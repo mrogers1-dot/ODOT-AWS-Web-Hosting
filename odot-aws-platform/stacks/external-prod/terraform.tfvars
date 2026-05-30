@@ -1,15 +1,12 @@
 # terraform.tfvars — Variable values for the external-prod stack.
-#
-# Replace placeholder values (marked with PLACEHOLDER) with actual values
-# before running `terraform apply`.
 
 # ── Provider ───────────────────────────────────────────────────────────────────
 
-assume_role_arn = "arn:aws:iam::549136075921:role/odot-terraform-deploy"
+assume_role_arn = "" # Empty = use current credentials (SSO profile). Set for CI/CD cross-account.
 
 # ── Networking ────────────────────────────────────────────────────────────────
 
-vpc_cidr           = "10.1.32.0/16"
+vpc_cidr           = "10.3.0.0/16"
 availability_zones = ["us-east-2a", "us-east-2b"]
 
 # ── ECS Cluster ───────────────────────────────────────────────────────────────
@@ -19,24 +16,30 @@ cluster_name = "WebHosting-Prod"
 # ── Security ──────────────────────────────────────────────────────────────────
 
 account_id            = "549136075921"                      # DOT-Web-External account ID
-org_id                = "o-PLACEHOLDER"                     # PLACEHOLDER: AWS Organizations ID
+org_id                = "o-ixc0lqn4jr"                      # AWS Organizations ID
 config_s3_bucket_name = "odot-config-external-549136075921" # S3 bucket for AWS Config delivery
+
+# These services are already enabled by AWS Organizations — skip creation
+enable_guardduty   = false
+enable_securityhub = false
+enable_config      = false
+enable_macie       = false
 
 # ── Monitoring ────────────────────────────────────────────────────────────────
 
-slack_workspace_id = "T00000000"               # PLACEHOLDER: Slack workspace ID
-slack_channel_id   = "C00000000"               # PLACEHOLDER: Slack channel ID for #aws-alerts-external
-alert_email        = "odot-alerts@example.com" # PLACEHOLDER: ServiceNow/FortiSIEM email
-budget_limit_usd   = 1000
+slack_workspace_id = "T0B72DR9L5U"               # Demo Slack workspace
+slack_channel_id   = "C0B74G0EN0J"               # Demo Slack channel for external alerts
+alert_email        = "odot-alerts@example.com"   # PLACEHOLDER: ServiceNow/FortiSIEM email
+budget_limit_usd   = 5000
 
 # ── OIDC ──────────────────────────────────────────────────────────────────────
 
-github_org   = "odot-ohio"           # PLACEHOLDER: GitHub Enterprise org name
-github_repos = ["odot-app-template"] # Repos allowed to deploy to this account
+github_org   = "ftvizsla"                                  # Personal GitHub (temp for testing)
+github_repos = ["odot-app-template", "odot-aws-platform"]  # Repos allowed to deploy to this account
 
 # ── WAF ───────────────────────────────────────────────────────────────────────
 
-waf_acl_arn = "arn:aws:wafv2:us-east-2:549136075921:regional/webacl/odot-external-waf/PLACEHOLDER" # PLACEHOLDER: WAF Web ACL ARN
+waf_acl_arn = "" # WAF will be created later — leave empty for initial deploy
 
 # ── Tags ──────────────────────────────────────────────────────────────────────
 

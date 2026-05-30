@@ -1,16 +1,18 @@
 # provider.tf — AWS provider configuration for the internal-prod stack.
 #
-# Configures the AWS provider to assume a cross-account role in the
-# DOT-Web-Internal account (577881328002). This enables multi-account
-# Terraform deployments from a central CI/CD runner or developer workstation.
+# When running locally with SSO profiles (e.g., AWS_PROFILE=odot-internal),
+# set assume_role_arn to "" to authenticate directly.
 #
 # Requirements: 8.1
 
 provider "aws" {
   region = "us-east-2"
 
-  assume_role {
-    role_arn = var.assume_role_arn
+  dynamic "assume_role" {
+    for_each = var.assume_role_arn != "" ? [var.assume_role_arn] : []
+    content {
+      role_arn = assume_role.value
+    }
   }
 
   default_tags {

@@ -1,0 +1,11 @@
+node_modules
+dist
+.terraform
+.terraform.lock.hcl
+terraform
+.git
+.github
+docs
+*.md
+.env
+.DS_Store
