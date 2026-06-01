@@ -17,7 +17,7 @@ output "cognito_app_client_id" {
 }
 
 output "cognito_domain" {
-  description = "Cognito hosted UI domain. Users are redirected here for Okta-federated login."
+  description = "Cognito hosted UI domain. Users are redirected here for login (Okta-federated or local, depending on configuration)."
   value       = "${var.cognito_domain_prefix}.auth.us-east-2.amazoncognito.com"
 }
 

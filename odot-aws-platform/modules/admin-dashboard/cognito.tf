@@ -1,10 +1,16 @@
 # modules/admin-dashboard/cognito.tf
 #
-# Provisions Cognito User Pool with Okta as a federated identity provider.
-# Authentication flow: Okta OIDC → Cognito User Pool → Dashboard app.
+# Provisions Cognito User Pool for the admin dashboard.
 #
-# Okta groups are mapped to the custom:role attribute in Cognito, which the
-# dashboard backend uses for RBAC (Admin vs Developer role enforcement).
+# When enable_okta_federation = true (production):
+#   Okta is configured as a federated OIDC identity provider.
+#   Authentication flow: Okta OIDC → Cognito User Pool → Dashboard app.
+#   Okta groups are mapped to custom:role for RBAC.
+#
+# When enable_okta_federation = false (POC):
+#   No federated IdP. Users are created directly in the Cognito User Pool.
+#   Authentication flow: Cognito Hosted UI (email/password) → Dashboard app.
+#   custom:role is set manually on each user via admin-create-user.
 #
 # Requirements: 14.1, 14.2
 
@@ -17,19 +23,24 @@ locals {
 }
 
 # ── Cognito User Pool ─────────────────────────────────────────────────────────
-#
-# The User Pool acts as the identity broker between Okta (corporate IdP) and
-# the dashboard application. Users never create Cognito-native accounts —
-# all authentication flows through Okta federation.
 resource "aws_cognito_user_pool" "dashboard" {
   name = "odot-dashboard-${var.stage}"
 
-  # Disable self-signup — all users must authenticate via Okta federation
+  # Disable self-signup — users are either federated via Okta or admin-created
   admin_create_user_config {
     allow_admin_create_user_only = true
   }
 
-  # Custom attribute for role mapping from Okta groups
+  # Password policy (required for local users in POC; harmless when federated)
+  password_policy {
+    minimum_length    = 8
+    require_uppercase = true
+    require_lowercase = true
+    require_numbers   = true
+    require_symbols   = true
+  }
+
+  # Custom attribute for role mapping
   schema {
     name                = "role"
     attribute_data_type = "String"
@@ -47,20 +58,18 @@ resource "aws_cognito_user_pool" "dashboard" {
 }
 
 # ── Cognito User Pool Domain ──────────────────────────────────────────────────
-#
-# Hosted UI domain for the Cognito login page. Users are redirected here
-# and then forwarded to Okta for authentication.
 resource "aws_cognito_user_pool_domain" "dashboard" {
   domain       = var.cognito_domain_prefix
   user_pool_id = aws_cognito_user_pool.dashboard.id
 }
 
-# ── Okta Identity Provider ────────────────────────────────────────────────────
+# ── Okta Identity Provider (production only) ──────────────────────────────────
 #
-# Configures Okta as an OIDC identity provider in Cognito. The attribute
-# mapping translates Okta's "groups" claim into Cognito's custom:role attribute,
-# enabling role-based access control in the dashboard.
+# Only created when enable_okta_federation = true.
+# Configures Okta as an OIDC identity provider in Cognito.
 resource "aws_cognito_identity_provider" "okta" {
+  count = var.enable_okta_federation ? 1 : 0
+
   user_pool_id  = aws_cognito_user_pool.dashboard.id
   provider_name = "Okta"
   provider_type = "OIDC"
@@ -74,18 +83,17 @@ resource "aws_cognito_identity_provider" "okta" {
   }
 
   # Attribute mapping: Okta claims → Cognito user attributes
-  # The "groups" claim from Okta is mapped to custom:role for RBAC
   attribute_mapping = {
-    email          = "email"
-    username       = "sub"
-    "custom:role"  = "groups"
+    email         = "email"
+    username      = "sub"
+    "custom:role" = "groups"
   }
 }
 
 # ── Cognito App Client ────────────────────────────────────────────────────────
 #
-# The app client used by the dashboard frontend. Configured for authorization
-# code flow (not implicit) for security. Supports Okta as the only IdP.
+# When federated (production): uses Okta as the only IdP, generates a client secret.
+# When local (POC): uses COGNITO as the IdP, no client secret (public client).
 resource "aws_cognito_user_pool_client" "dashboard" {
   name         = "odot-dashboard-client-${var.stage}"
   user_pool_id = aws_cognito_user_pool.dashboard.id
@@ -95,8 +103,8 @@ resource "aws_cognito_user_pool_client" "dashboard" {
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_scopes                 = ["openid", "profile", "email"]
 
-  # Supported identity providers — Okta only (no Cognito-native login)
-  supported_identity_providers = [aws_cognito_identity_provider.okta.provider_name]
+  # Identity providers — Okta when federated, COGNITO when local
+  supported_identity_providers = var.enable_okta_federation ? ["Okta"] : ["COGNITO"]
 
   # Callback and logout URLs
   callback_urls = var.callback_urls
@@ -113,6 +121,8 @@ resource "aws_cognito_user_pool_client" "dashboard" {
     refresh_token = "hours"
   }
 
-  # Generate a client secret for server-side token exchange
-  generate_secret = true
+  # Client secret: required for confidential client (Okta flow), not needed for public client (POC)
+  generate_secret = var.enable_okta_federation
+
+  depends_on = [aws_cognito_identity_provider.okta]
 }

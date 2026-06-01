@@ -36,20 +36,29 @@ variable "external_account_id" {
   type        = string
 }
 
+variable "enable_okta_federation" {
+  description = "Whether to configure Okta as a federated IdP. Set to false for POC (Cognito local users only)."
+  type        = bool
+  default     = true
+}
+
 variable "okta_issuer_url" {
-  description = "Okta OIDC issuer URL (e.g., https://odot.okta.com/oauth2/default)."
+  description = "Okta OIDC issuer URL (e.g., https://odot.okta.com/oauth2/default). Required only when enable_okta_federation = true."
   type        = string
+  default     = ""
 }
 
 variable "okta_client_id" {
-  description = "Okta OIDC application client ID."
+  description = "Okta OIDC application client ID. Required only when enable_okta_federation = true."
   type        = string
+  default     = ""
 }
 
 variable "okta_client_secret" {
-  description = "Okta OIDC application client secret. Stored in Secrets Manager in production."
+  description = "Okta OIDC application client secret. Stored in Secrets Manager in production. Required only when enable_okta_federation = true."
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 variable "callback_urls" {
