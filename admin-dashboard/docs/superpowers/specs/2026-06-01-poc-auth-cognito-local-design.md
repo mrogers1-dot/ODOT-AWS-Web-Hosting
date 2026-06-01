@@ -131,6 +131,69 @@ When Okta is provisioned:
 5. No backend code changes required
 6. No frontend code changes required (Cognito handles the Okta redirect transparently)
 
+## Deployment Configuration
+
+### Environment Variables Required
+
+**Backend (ECS Task Definition):**
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `COGNITO_USER_POOL_ID` | `us-east-2_XXXXXXX` | POC pool ID (output from Terraform/CDK) |
+| `AWS_REGION` | `us-east-2` | Already set in current config |
+
+**Frontend (Vite build-time — `VITE_` prefix required):**
+
+| Variable | Value | Notes |
+|----------|-------|-------|
+| `VITE_COGNITO_DOMAIN` | `odot-dashboard-poc.auth.us-east-2.amazoncognito.com` | Cognito Hosted UI domain |
+| `VITE_COGNITO_CLIENT_ID` | `<app-client-id>` | Output from Terraform/CDK |
+| `VITE_COGNITO_REDIRECT_URI` | `http://localhost:3000/callback` (dev) or `https://{alb-url}/callback` (deployed) | Must match Cognito App Client config |
+| `VITE_COGNITO_LOGOUT_URI` | `http://localhost:3000/` (dev) or `https://{alb-url}/` (deployed) | Must match Cognito App Client config |
+
+### Where to Set These
+
+| Context | Mechanism |
+|---------|-----------|
+| Local dev | `.env` file (gitignored) |
+| CI/CD build | GitHub Actions secrets/variables → passed as `--build-arg` in Dockerfile or `.env` file generated in pipeline |
+| ECS runtime | Task definition environment block (managed by Terraform/CDK) |
+
+### Dockerfile Build Args (addition)
+
+The Dockerfile needs build args for the frontend env vars so Vite can inline them at build time:
+
+```dockerfile
+# In the build stage, add:
+ARG VITE_COGNITO_DOMAIN
+ARG VITE_COGNITO_CLIENT_ID
+ARG VITE_COGNITO_REDIRECT_URI
+ARG VITE_COGNITO_LOGOUT_URI
+```
+
+### CI/CD Pipeline Update
+
+The `build-push` job needs to pass build args:
+
+```yaml
+docker build \
+  --build-arg VITE_COGNITO_DOMAIN=${{ vars.VITE_COGNITO_DOMAIN }} \
+  --build-arg VITE_COGNITO_CLIENT_ID=${{ vars.VITE_COGNITO_CLIENT_ID }} \
+  --build-arg VITE_COGNITO_REDIRECT_URI=${{ vars.VITE_COGNITO_REDIRECT_URI }} \
+  --build-arg VITE_COGNITO_LOGOUT_URI=${{ vars.VITE_COGNITO_LOGOUT_URI }} \
+  -t ${IMAGE}:${{ github.sha }} \
+  -t ${IMAGE}:${{ github.ref_name }}-latest .
+```
+
+### Cognito Callback URL Must Match Deployed URL
+
+The Cognito App Client's allowed callback/logout URLs must include the actual deployed URL (ALB or CloudFront). When the ECS service is deployed behind a load balancer, add that URL to the Cognito App Client config:
+
+- Callback: `https://{alb-or-cloudfront-url}/callback`
+- Logout: `https://{alb-or-cloudfront-url}/`
+
+This is a one-time Terraform/CDK config update per environment.
+
 ## Out of Scope (POC)
 
 - MFA enforcement
