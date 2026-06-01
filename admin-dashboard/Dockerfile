@@ -23,6 +23,12 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Frontend auth config (injected at build time for Vite)
+ARG VITE_COGNITO_DOMAIN
+ARG VITE_COGNITO_CLIENT_ID
+ARG VITE_COGNITO_REDIRECT_URI
+ARG VITE_COGNITO_LOGOUT_URI
+
 # Build TypeScript backend
 RUN npx tsc --outDir dist
 

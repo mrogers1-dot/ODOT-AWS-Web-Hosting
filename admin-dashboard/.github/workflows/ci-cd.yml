@@ -69,7 +69,13 @@ jobs:
       - name: Build and push
         run: |
           IMAGE="${{ steps.ecr-login.outputs.registry }}/${{ vars.ECR_REPOSITORY_NAME }}"
-          docker build -t ${IMAGE}:${{ github.sha }} -t ${IMAGE}:${{ github.ref_name }}-latest .
+          docker build \
+            --build-arg VITE_COGNITO_DOMAIN=${{ vars.VITE_COGNITO_DOMAIN }} \
+            --build-arg VITE_COGNITO_CLIENT_ID=${{ vars.VITE_COGNITO_CLIENT_ID }} \
+            --build-arg VITE_COGNITO_REDIRECT_URI=${{ vars.VITE_COGNITO_REDIRECT_URI }} \
+            --build-arg VITE_COGNITO_LOGOUT_URI=${{ vars.VITE_COGNITO_LOGOUT_URI }} \
+            -t ${IMAGE}:${{ github.sha }} \
+            -t ${IMAGE}:${{ github.ref_name }}-latest .
           docker push ${IMAGE}:${{ github.sha }}
           docker push ${IMAGE}:${{ github.ref_name }}-latest
 
